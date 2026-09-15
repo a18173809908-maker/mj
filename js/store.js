@@ -3,19 +3,25 @@
    所有数据保存在手机本机（localStorage），不上传任何服务器。
    数据模型：
      customer = { id, name, phone, note, createdAt, updatedAt }
-     tx       = { id, customerId, type:'owe'|'paid', category:'fee'|'cig'|'other',
-                  amount, date:'YYYY-MM-DD', note, createdAt }
+     tx       = { id, customerId, type:'owe'|'paid', category:'fee'|'cig'|'loan'|'other',
+                  amount, date:'YYYY-MM-DD', note, incomeId, createdAt }
        type = 'owe'  记欠款（他欠我的钱增加）
        type = 'paid' 收回（他欠我的钱减少）
-       category: fee=台费茶水类  cig=代买烟  other=其他
+       category: fee=台费茶水  cig=代买烟  loan=借款/还借款  other=其他
+       incomeId: 属于哪一场牌（借款、挂账台费、代买烟都挂在产生它的那场下面）
      余额 = Σ owe − Σ paid    正数=他欠我；负数=我欠他
-     income   = { id, date, players, unitPrice, amount, note, credits, createdAt }
-       营业收入：一场的收费（人数 × 每人单价，金额可手改）
-       本场赊账明细不另存：有客人当场没掏钱（台费/烟钱先记着）时，直接生成该客户的
-       欠款流水并打上 incomeId。查明细用 creditsOf(incomeId)，改/删营收时按明细重建或撤销。
-       真相只有一份（流水里），不会两边对不上。
-       口径：amount = 本场营业额（台费，含赊账）；cash = amount − Σfee（实收现金）；
-             Σcig = 代买烟赊账（垫付，不计入营业额，单独进客户欠款）
+
+     session（历史上叫 income）= 一场牌，是有生命周期的作业单元
+       { id, date, players, unitPrice, amount, feeMode, status,
+         openAt, closeAt, tableNo, note, createdAt }
+         status: 'open' 开台中（人还在打） | 'closed' 已收台
+         feeMode: 'separate' 台费单独收 | 'netting' 台费从借款里扣（借 500 扣 20 实拿 480）
+         players = 上桌人数；amount = 本场台费总额（默认 人数×每人，可手改）
+       场里发生的借款/还款/挂账台费/代买烟，真相只有一份——全在流水 tx 里，
+       用 incomeId 指回这场牌；不在场次上另存，从根上避免两边对不上。
+       口径：amount = 本场台费收入（营业额，含赊账）；
+             Σ category='loan' 的 owe/paid = 这场借出去/收回来的钱（往来款，不是收入）；
+             Σ category='cig' = 代买烟赊账（老板垫付，不计入营业额）
      settings.cigs = [{ id, name, price }]   常用烟品价目（快捷记账用）
    ========================================================================== */
 (function (global) {
@@ -83,8 +89,11 @@
     return (neg ? '-' : '') + parts.join('.');
   }
 
-  var CATEGORY_LABEL = { fee: '台费', cig: '烟钱', other: '其他' };
-  function normCategory(c) { return (c === 'cig' || c === 'other') ? c : 'fee'; }
+  var CATEGORY_LABEL = { fee: '台费', cig: '烟钱', loan: '借款', other: '其他' };
+  function normCategory(c) { return (c === 'cig' || c === 'other' || c === 'loan') ? c : 'fee'; }
+
+  /** 开台借款的默认额（老板可在开台时单改） */
+  var DEFAULT_STAKE = 500;
 
   /* 默认烟品价目（老板可在「我的」里改名改价） */
   function defaultCigs() {
@@ -140,6 +149,12 @@
       this.data.incomes.forEach(function (i) {
         if (i.players === undefined) { i.players = 1; changed = true; }
         if (i.unitPrice === undefined) { i.unitPrice = round2(i.amount); changed = true; }
+        // v1.4：一场牌有生命周期（开台中 / 已收台）+ 台费收法；老记录一律视为已收台
+        if (i.status !== 'open' && i.status !== 'closed') { i.status = 'closed'; changed = true; }
+        if (i.feeMode !== 'netting' && i.feeMode !== 'separate') { i.feeMode = 'separate'; changed = true; }
+        if (i.openAt === undefined) { i.openAt = i.createdAt || Date.now(); changed = true; }
+        if (i.closeAt === undefined) { i.closeAt = i.status === 'closed' ? (i.openAt || Date.now()) : null; changed = true; }
+        if (i.tableNo === undefined) { i.tableNo = ''; changed = true; }
       });
       // 老流水没有 incomeId 字段，补上以免被误判为营收生成
       this.data.txs.forEach(function (t) {
@@ -306,6 +321,7 @@
       var out = this.data.incomes.slice();
       if (filter.from) out = out.filter(function (i) { return i.date >= filter.from; });
       if (filter.to) out = out.filter(function (i) { return i.date <= filter.to; });
+      if (filter.status) out = out.filter(function (i) { return (i.status || 'closed') === filter.status; });
       out.sort(function (a, b) {
         if (a.date !== b.date) return a.date < b.date ? 1 : -1;
         return (b.createdAt || 0) - (a.createdAt || 0);
@@ -313,11 +329,209 @@
       return out;
     },
 
+    /** 正在开的台（按开台时间正序：打得最久的排最前） */
+    openSessions: function () {
+      return this.data.incomes
+        .filter(function (i) { return i.status === 'open'; })
+        .sort(function (a, b) { return (a.openAt || a.createdAt || 0) - (b.openAt || b.createdAt || 0); });
+    },
+
     getIncome: function (id) {
       for (var i = 0; i < this.data.incomes.length; i++) {
         if (this.data.incomes[i].id === id) return this.data.incomes[i];
       }
       return null;
+    },
+
+    /* ---------- 一场牌：开台 / 局中借还 / 收台 ---------- */
+
+    /** 语义别名（"一场牌"） */
+    getSession: function (id) { return this.getIncome(id); },
+    listSessions: function (filter) { return this.listIncomes(filter); },
+
+    /** 这场牌关联的全部流水（按发生时间正序） */
+    sessionTxs: function (sessionId) {
+      var self = this;
+      return this.data.txs
+        .filter(function (t) { return t.incomeId === sessionId; })
+        .sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); })
+        .map(function (t) {
+          var c = self.getCustomer(t.customerId);
+          return {
+            id: t.id, customerId: t.customerId, name: c ? c.name : '（已删除）',
+            type: t.type === 'paid' ? 'paid' : 'owe', category: normCategory(t.category),
+            amount: round2(t.amount || 0), note: t.note || '', createdAt: t.createdAt || 0
+          };
+        });
+    },
+
+    /** 这场牌每位玩家的借贷小计（谁借了多少、还了多少、这场给他留下多少欠款） */
+    sessionPlayers: function (sessionId) {
+      var self = this, m = {}, order = [];
+      this.data.txs.forEach(function (t) {
+        if (t.incomeId !== sessionId) return;
+        if (!m[t.customerId]) {
+          var c = self.getCustomer(t.customerId);
+          m[t.customerId] = {
+            customerId: t.customerId, name: c ? c.name : '（已删除）',
+            phone: c ? (c.phone || '') : '',
+            loanOut: 0, loanBack: 0, credit: 0, cig: 0
+          };
+          order.push(t.customerId);
+        }
+        var r = m[t.customerId], cat = normCategory(t.category), amt = Number(t.amount || 0);
+        if (t.type === 'paid') {
+          r.loanBack += amt;                 // 还借款 / 还挂账，都算他还进来的钱
+        } else if (cat === 'loan') {
+          r.loanOut += amt;                  // 借出去的本金
+        } else {
+          r.credit += amt;                   // 挂在这场的台费 / 烟钱
+          if (cat === 'cig') r.cig += amt;
+        }
+      });
+      return order.map(function (k) {
+        var r = m[k];
+        r.loanOut = round2(r.loanOut); r.loanBack = round2(r.loanBack);
+        r.credit = round2(r.credit); r.cig = round2(r.cig);
+        r.net = round2(r.loanOut + r.credit - r.loanBack);
+        return r;
+      }).sort(function (a, b) {
+        if (b.net !== a.net) return b.net - a.net;
+        return a.name.localeCompare(b.name, 'zh');
+      });
+    },
+
+    /** 这场牌的钱账汇总 */
+    sessionSummary: function (sessionOrId) {
+      var s = typeof sessionOrId === 'string' ? this.getIncome(sessionOrId) : sessionOrId;
+      if (!s) return null;
+      var loanOut = 0, loanBack = 0, creditFee = 0, creditCig = 0;
+      this.data.txs.forEach(function (t) {
+        if (t.incomeId !== s.id) return;
+        var cat = normCategory(t.category), amt = Number(t.amount || 0);
+        if (t.type === 'paid') { loanBack += amt; return; }
+        if (cat === 'loan') { loanOut += amt; return; }
+        creditFee += amt;
+        if (cat === 'cig') creditCig += amt;
+      });
+      var feeMode = s.feeMode === 'netting' ? 'netting' : 'separate';
+      var fee = round2(s.amount || 0);
+      return {
+        fee: fee,
+        feeMode: feeMode,
+        creditFee: round2(creditFee - creditCig),   // 赊掉的台费
+        creditCig: round2(creditCig),               // 赊掉的烟钱（代买垫付）
+        credit: round2(creditFee),                  // 挂账合计
+        cashFee: feeMode === 'netting' ? 0 : round2(fee - (creditFee - creditCig)),
+        loanOut: round2(loanOut),
+        loanBack: round2(loanBack),
+        netLoan: round2(loanOut - loanBack),
+        // 这场老板净掏出去多少现金 = 借出 − 收回 − 从借款里抵扣的台费
+        cashOut: round2(loanOut - loanBack - (feeMode === 'netting' ? fee : 0))
+      };
+    },
+
+    /** 局中/收台时：给某位玩家记一笔借款（owe）或还款（paid） */
+    addSessionTx: function (sessionId, info) {
+      var s = this.getIncome(sessionId);
+      if (!s) return null;
+      var t = this.addTx({
+        customerId: info.customerId,
+        type: info.type === 'paid' ? 'paid' : 'owe',
+        category: info.category || 'loan',
+        amount: info.amount,
+        date: info.date || s.date || toDateStr(new Date()),
+        note: info.note || ''
+      });
+      if (!t) return null;
+      t.incomeId = sessionId;
+      this.save();
+      return t;
+    },
+
+    /**
+     * 开台。members = [{ customerId, stake, credit, cig, cigName }]
+     *  stake = 开台借款额（0 = 自带现金、不用借）；credit/cig = 顺手挂在这场的台费 / 烟钱
+     */
+    openSession: function (info) {
+      var now = Date.now();
+      var members = (info.members || []).filter(function (m) { return m && m.customerId; });
+      var headcount = Math.max(1, Number(info.players) || members.length || 1);
+      var unitPrice = round2(info.unitPrice || 0);
+      var amount = round2(info.amount);
+      if (!(amount > 0)) amount = round2(headcount * unitPrice);
+
+      var s = {
+        id: uid('s'),
+        date: info.date || toDateStr(new Date()),
+        players: headcount,
+        unitPrice: unitPrice,
+        amount: amount,
+        feeMode: info.feeMode === 'netting' ? 'netting' : 'separate',
+        status: 'open',
+        openAt: now,
+        closeAt: null,
+        tableNo: String(info.tableNo || '').trim(),
+        note: String(info.note || '').trim(),
+        createdAt: now
+      };
+      this.data.incomes.push(s);
+
+      var self = this, seq = 0;
+      members.forEach(function (m) {
+        var stake = round2(m.stake);
+        if (stake > 0) {
+          self.data.txs.push({
+            id: uid('t'), customerId: m.customerId, type: 'owe', category: 'loan',
+            amount: stake, date: s.date, note: '开台借款',
+            incomeId: s.id, createdAt: now + (seq++)
+          });
+        }
+        if (round2(m.credit) > 0) {
+          self.data.txs.push({
+            id: uid('t'), customerId: m.customerId, type: 'owe', category: 'fee',
+            amount: round2(m.credit), date: s.date, note: '台费 · 记在这场上',
+            incomeId: s.id, createdAt: now + (seq++)
+          });
+        }
+        if (round2(m.cig) > 0) {
+          self.data.txs.push({
+            id: uid('t'), customerId: m.customerId, type: 'owe', category: 'cig',
+            amount: round2(m.cig), date: s.date,
+            note: '代买烟' + (m.cigName ? ' · ' + m.cigName : '') + ' · 记在这场上',
+            incomeId: s.id, createdAt: now + (seq++)
+          });
+        }
+      });
+      this.save();
+      return s;
+    },
+
+    /** 收台 */
+    closeSession: function (id) {
+      var s = this.getIncome(id);
+      if (!s) return null;
+      s.status = 'closed';
+      s.closeAt = Date.now();
+      this.save();
+      return s;
+    },
+
+    /** 重新开台（记错了，接着改） */
+    reopenSession: function (id) {
+      var s = this.getIncome(id);
+      if (!s) return null;
+      s.status = 'open';
+      s.closeAt = null;
+      this.save();
+      return s;
+    },
+
+    /** 这场牌当前牌面余额（玩家欠款净额合计） */
+    sessionNet: function (sessionId) {
+      var n = 0;
+      this.sessionPlayers(sessionId).forEach(function (p) { n += p.net; });
+      return round2(n);
     },
 
     /** 清洗传入的赊账明细 → 只保留有效客户、正数金额 */
@@ -345,7 +559,7 @@
     creditsOf: function (incomeId) {
       var self = this;
       return this.data.txs.filter(function (t) {
-        return t.incomeId === incomeId && t.type === 'owe';
+        return t.incomeId === incomeId && t.type === 'owe' && normCategory(t.category) !== 'loan';
       }).sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); })
         .map(function (t) {
           var c = self.getCustomer(t.customerId);
@@ -394,7 +608,10 @@
      */
     syncIncomeTxs: function (income, credits) {
       var self = this;
-      this.data.txs = this.data.txs.filter(function (t) { return t.incomeId !== income.id; });
+      // 只重建"挂在这场的台费/烟钱"；借款与还款流水是牌面的真实记录，原样保留
+      this.data.txs = this.data.txs.filter(function (t) {
+        return t.incomeId !== income.id || t.type === 'paid' || normCategory(t.category) === 'loan';
+      });
       var now = Date.now(), seq = 0;
       this.normCredits(credits).forEach(function (c) {
         if (!self.getCustomer(c.customerId)) return;
@@ -420,14 +637,20 @@
     addIncome: function (info) {
       var amount = round2(info.amount);
       if (!(amount > 0)) return null;
+      var now = Date.now();
       var it = {
         id: uid('i'),
         date: info.date || toDateStr(new Date()),
         players: Math.max(1, Number(info.players) || 1),
         unitPrice: round2(info.unitPrice || 0),
         amount: amount,
+        feeMode: info.feeMode === 'netting' ? 'netting' : 'separate',
+        status: info.status === 'open' ? 'open' : 'closed',
+        openAt: now,
+        closeAt: info.status === 'open' ? null : now,
+        tableNo: String(info.tableNo || '').trim(),
         note: String(info.note || '').trim(),
-        createdAt: Date.now()
+        createdAt: now
       };
       this.data.incomes.push(it);
       this.syncIncomeTxs(it, info.credits);
@@ -450,6 +673,8 @@
         it.note = String(patch.note).trim();
         needSync = true;
       }
+      if (patch.tableNo !== undefined) it.tableNo = String(patch.tableNo).trim();
+      if (patch.feeMode !== undefined) it.feeMode = patch.feeMode === 'netting' ? 'netting' : 'separate';
       // 明细显式传入就用新的；只改了日期/备注，则拿现有明细重建一遍让流水跟上
       if (patch.credits !== undefined) this.syncIncomeTxs(it, patch.credits);
       else if (needSync) this.syncIncomeTxs(it, this.creditsInputOf(it.id));
@@ -498,6 +723,22 @@
         avg: games ? round2(total / games) : 0,
         perHead: players ? round2(total / players) : 0
       };
+    },
+
+    /** 区间借贷统计：这场牌借出去多少、收回多少（往来款，不是营业收入） */
+    loanStats: function (from, to) {
+      var out = 0, back = 0, n = 0;
+      var dateOf = {};
+      this.data.incomes.forEach(function (i) { dateOf[i.id] = i.date; });
+      this.data.txs.forEach(function (t) {
+        if (normCategory(t.category) !== 'loan') return;
+        var d = (t.incomeId && dateOf[t.incomeId]) || t.date;
+        if (from && d < from) return;
+        if (to && d > to) return;
+        if (t.type === 'paid') back += Number(t.amount || 0);
+        else { out += Number(t.amount || 0); n++; }
+      });
+      return { out: round2(out), back: round2(back), net: round2(out - back), count: n };
     },
 
     /** 区间内还在挂账的营收笔数（有人欠着这场的钱） */
@@ -602,7 +843,7 @@
     /** 某客户流水汇总（含分类小计） */
     summaryOf: function (customerId) {
       var owe = 0, paid = 0, count = 0, last = null;
-      var byCat = { fee: 0, cig: 0, other: 0 };
+      var byCat = { loan: 0, fee: 0, cig: 0, other: 0 };
       for (var i = 0; i < this.data.txs.length; i++) {
         var t = this.data.txs[i];
         if (t.customerId !== customerId) continue;
@@ -617,7 +858,8 @@
       return {
         owe: round2(owe), paid: round2(paid), balance: round2(owe - paid),
         count: count, lastDate: last,
-        oweFee: round2(byCat.fee), oweCig: round2(byCat.cig), oweOther: round2(byCat.other)
+        oweLoan: round2(byCat.loan), oweFee: round2(byCat.fee),
+        oweCig: round2(byCat.cig), oweOther: round2(byCat.other)
       };
     },
 
@@ -652,6 +894,7 @@
       var monthFrom = todayStr.slice(0, 7) + '-01';
       var today = this.incomeStats(todayStr, todayStr);
       var month = this.incomeStats(monthFrom, null);
+      var openTables = this.data.incomes.filter(function (i) { return i.status === 'open'; }).length;
       return {
         receivable: round2(receivable),
         payable: round2(payable),
@@ -663,7 +906,10 @@
         todayGames: today.games,
         monthIncome: month.total,
         monthGames: month.games,
-        monthPlayers: month.players
+        monthPlayers: month.players,
+        openTables: openTables,
+        todayLoan: this.loanStats(todayStr, todayStr),
+        monthLoan: this.loanStats(monthFrom, null)
       };
     },
 
@@ -752,35 +998,41 @@
 
       rows.push([]);
       rows.push(['【客户余额汇总】']);
-      rows.push(['客户', '电话', '累计欠款', '其中台费', '其中烟钱', '累计收回', '当前应收']);
+      rows.push(['客户', '电话', '累计欠款', '其中借款', '其中台费', '其中烟钱', '累计收回', '当前应收']);
       var bm = this.balanceMap();
       this.data.customers.forEach(function (c) {
         var s = self.summaryOf(c.id);
-        rows.push([c.name, c.phone || '', s.owe.toFixed(2), s.oweFee.toFixed(2), s.oweCig.toFixed(2), s.paid.toFixed(2), (bm[c.id] || 0).toFixed(2)]);
+        rows.push([c.name, c.phone || '', s.owe.toFixed(2), s.oweLoan.toFixed(2), s.oweFee.toFixed(2),
+          s.oweCig.toFixed(2), s.paid.toFixed(2), (bm[c.id] || 0).toFixed(2)]);
       });
 
       rows.push([]);
-      rows.push(['【营业收入明细】']);
-      rows.push(['日期', '人数', '每人(元)', '本场营业额(元)', '实收现金(元)', '其中挂账(元)', '备注', '录入时间']);
+      rows.push(['【牌局明细（每场牌的收入与借贷）】']);
+      rows.push(['日期', '台号/备注', '状态', '人数', '每人台费(元)', '台费收入(元)', '台费收现(元)', '台费挂账(元)', '借出(元)', '收回(元)', '净借出(元)', '录入时间']);
       var incomes = this.listIncomes().slice().sort(function (a, b) {
         if (a.date !== b.date) return a.date < b.date ? -1 : 1;
         return (a.createdAt || 0) - (b.createdAt || 0);
       });
-      var sumAmount = 0, sumCash = 0, sumCredit = 0;
+      var tFee = 0, tCash = 0, tCredit = 0, tOut = 0, tBack = 0;
       incomes.forEach(function (i) {
-        var cs = self.creditSumOf(i.id);
-        var amt = Number(i.amount || 0);
-        sumAmount += amt; sumCredit += cs.fee; sumCash += amt - cs.fee;
+        var ss = self.sessionSummary(i);
+        tFee += ss.fee; tCash += ss.cashFee; tCredit += ss.creditFee;
+        tOut += ss.loanOut; tBack += ss.loanBack;
         rows.push([
-          i.date, i.players, Number(i.unitPrice || 0).toFixed(2), amt.toFixed(2),
-          round2(amt - cs.fee).toFixed(2), cs.fee.toFixed(2),
-          i.note || '', i.createdAt ? new Date(i.createdAt).toLocaleString('zh-CN') : ''
+          i.date, [i.tableNo, i.note].filter(Boolean).join(' '),
+          i.status === 'open' ? '开台中' : '已收台',
+          i.players, Number(i.unitPrice || 0).toFixed(2),
+          ss.fee.toFixed(2), ss.cashFee.toFixed(2), ss.creditFee.toFixed(2),
+          ss.loanOut.toFixed(2), ss.loanBack.toFixed(2), ss.netLoan.toFixed(2),
+          i.createdAt ? new Date(i.createdAt).toLocaleString('zh-CN') : ''
         ]);
       });
-      rows.push(['合计', '', '', round2(sumAmount).toFixed(2), round2(sumCash).toFixed(2), round2(sumCredit).toFixed(2)]);
+      rows.push(['合计', '', '', '', '', round2(tFee).toFixed(2), round2(tCash).toFixed(2),
+        round2(tCredit).toFixed(2), round2(tOut).toFixed(2), round2(tBack).toFixed(2),
+        round2(tOut - tBack).toFixed(2)]);
 
       rows.push([]);
-      rows.push(['【营收挂账明细（当场没收钱的部分）】']);
+      rows.push(['【牌局挂账明细（当场没收钱的部分）】']);
       rows.push(['日期', '客户', '项目', '金额(元)', '说明']);
       var anyCredit = false;
       incomes.forEach(function (i) {
@@ -790,6 +1042,22 @@
         });
       });
       if (!anyCredit) rows.push(['（暂无挂账，场场收清）']);
+
+      rows.push([]);
+      rows.push(['【牌局借款明细（开台借款 / 局中借还 / 收台结算）】']);
+      rows.push(['日期', '台号/备注', '客户', '动作', '金额(元)', '备注']);
+      var anyLoan = false;
+      incomes.forEach(function (i) {
+        self.sessionTxs(i.id).forEach(function (t) {
+          if (t.category !== 'loan') return;
+          anyLoan = true;
+          rows.push([
+            i.date, [i.tableNo, i.note].filter(Boolean).join(' '), t.name,
+            t.type === 'paid' ? '还钱' : '借钱', t.amount.toFixed(2), t.note || ''
+          ]);
+        });
+      });
+      if (!anyLoan) rows.push(['（暂无借款记录）']);
 
       var csv = rows.map(function (r) {
         return r.map(function (cell) {
@@ -863,7 +1131,21 @@
           credits: (it.credits || []).filter(function (x) { return x.customerId; })
         });
       });
-      return { customers: 3, txs: this.data.txs.length, incomes: demoIncome.length };
+
+      // 正在打的台：演示「开台每人先借 500、局中再借、中途还钱」
+      var members = [a, b, c].filter(Boolean).map(function (x) {
+        return { customerId: x.id, stake: 500 };
+      });
+      var open = null;
+      if (members.length) {
+        open = Store.openSession({
+          date: d(0), players: members.length, unitPrice: 20, tableNo: '1号台',
+          members: members
+        });
+        if (open && a) Store.addSessionTx(open.id, { customerId: a.id, type: 'owe', amount: 200, note: '输光了再借' });
+        if (open && b) Store.addSessionTx(open.id, { customerId: b.id, type: 'paid', amount: 300, note: '赢了先还一部分' });
+      }
+      return { customers: 3, txs: this.data.txs.length, incomes: demoIncome.length + (open ? 1 : 0) };
     }
   };
 
