@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '1.4.0';
+  var VERSION = '1.5.0';
 
   var state = {
     route: 'home',
@@ -201,7 +201,7 @@
     ];
 
     var html =
-      pageTitle('往来账', '账目只存在这台手机上') +
+      pageTitle('往来账', '账目只存在这台手机上', false, [{ id: 'addCust', label: 'usersAdd', title: '新增客户' }]) +
 
       '<div class="hero">' +
       '  <div class="hero-label">当前应收总额（客户共欠）</div>' +
@@ -221,7 +221,10 @@
         return '<button class="chip' + (state.custSort === s.id ? ' on' : '') + '" data-sort="' + s.id + '" type="button">' + s.label + '</button>';
       }).join('') + '</div>' +
 
-      '<div class="section"><div class="card">';
+      '<div class="section">' +
+      '<div class="section-head"><h2>客户名单' + (custs.length ? ' · ' + custs.length + ' 位' : '') + '</h2>' +
+      '<button class="link" id="addCustBtn" type="button">' + icon('plus', 14) + '新增客户</button></div>' +
+      '<div class="card">';
 
     if (!custs.length) {
       html += emptyHtml(kw);
@@ -259,20 +262,27 @@
     view.querySelectorAll('[data-cust]').forEach(function (b) {
       b.addEventListener('click', function () { go('#/c/' + b.getAttribute('data-cust')); });
     });
+    var addTop = view.querySelector('[data-act="addCust"]');
+    if (addTop) addTop.addEventListener('click', function () { openCustomerSheet(null); });
+    var addLink = $('#addCustBtn');
+    if (addLink) addLink.addEventListener('click', function () { openCustomerSheet(null); });
     var demo = $('#loadDemoBtn');
     if (demo) demo.addEventListener('click', loadDemo);
   }
 
   function emptyHtml(kw) {
     if (kw) {
-      return '<div class="empty"><div class="big">🔍</div><h3>没找到“' + esc(state.custKeyword.trim()) + '”</h3><p>换个关键词试试，或者点右下角 + 新建客户</p></div>';
+      return '<div class="empty"><div class="big">🔍</div><h3>没找到“' + esc(state.custKeyword.trim()) + '”</h3>' +
+        '<p>换个关键词试试，或者点上面的「<b>＋ 新增客户</b>」建一位新客人</p></div>';
     }
     if (!Store.hasAnyData()) {
-      return '<div class="empty"><div class="big">🀄</div><h3>还没有账目</h3>' +
-        '<p>点右下角的 <b>＋</b> 记客户往来<br>「营收」页记每场收入<br>「我的」里可以看示例数据</p>' +
+      return '<div class="empty"><div class="big">🀄</div><h3>还没有客户</h3>' +
+        '<p>点上面的「<b>＋ 新增客户</b>」，先把常来的客人们录进来<br>' +
+        '之后「牌局」页开台、「流水」页查账<br>客户详情里也能随时记欠款 / 收款</p>' +
         '<button id="loadDemoBtn" class="chip" type="button" style="margin-top:14px">先看看示例数据</button></div>';
     }
-    return '<div class="empty"><div class="big">🀄</div><h3>没有匹配的客户</h3><p>点右下角 <b>＋</b> 新建一位客户</p></div>';
+    return '<div class="empty"><div class="big">🀄</div><h3>没有匹配的客户</h3>' +
+      '<p>搜不到就点上面的「<b>＋ 新增客户</b>」加一位</p></div>';
   }
 
   function loadDemo() {
@@ -1294,6 +1304,8 @@
       '</div></div>' +
 
       '<div class="section"><div class="section-head"><h2>客户名单</h2></div><div class="card">' +
+      '  <button class="list-item" id="addOneCust" type="button"><span class="li-ico">' + icon('smile', 21) + '</span>' +
+      '    <span class="li-txt">新增客户<span class="li-desc">单独录一位客人，不记账也能先建好档案</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
       '  <button class="list-item" id="impNames" type="button"><span class="li-ico">' + icon('usersAdd', 21) + '</span>' +
       '    <span class="li-txt">批量导入客户<span class="li-desc">粘贴名单，一行一个：姓名,电话,备注</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
       '</div></div>' +
@@ -1383,6 +1395,7 @@
     }
 
     $('#impNames').addEventListener('click', openNamesSheet);
+    $('#addOneCust').addEventListener('click', function () { openCustomerSheet(null); });
     $('#clearAll').addEventListener('click', function () {
       confirmDlg({
         title: '清空全部数据？',
@@ -1727,8 +1740,9 @@
 
   function openCustomerSheet(custId) {
     var c = custId ? Store.getCustomer(custId) : null;
+    var created = 0;              // 本次连续录入了几位
     var sheet = openSheet(
-      sheetHead(c ? '编辑客户' : '新建客户') +
+      sheetHead(c ? '编辑客户' : '新增客户') +
       '<div class="sheet-body">' +
       '  <div class="field"><label>姓名 / 外号 *</label>' +
       '    <input class="input" id="cName" maxlength="20" placeholder="怎么顺口怎么叫" value="' + esc(c ? c.name : '') + '"></div>' +
@@ -1736,14 +1750,28 @@
       '    <input class="input" id="cPhone" type="tel" inputmode="tel" maxlength="20" placeholder="催款用" value="' + esc(c ? c.phone : '') + '"></div>' +
       '  <div class="field"><label>备注（可不填）</label>' +
       '    <input class="input" id="cNote" maxlength="60" placeholder="比如：熟客，每周三来" value="' + esc(c ? c.note : '') + '"></div>' +
+      (c ? '' : '  <p class="hint" id="cTip">录完一位点「<b>存下再录一位</b>」，能一口气把常来的客人都建好。</p>') +
       '</div>' +
       '<div class="sheet-foot">' +
-      (c ? '<div class="btn-row" style="margin-bottom:10px"><button class="btn btn-danger" id="delCust" type="button">' + icon('trash', 18) + '删除客户</button></div>' : '') +
-      '  <button class="btn btn-primary" id="saveCust" type="button">保存</button>' +
-      '</div>'
+      (c
+        ? '<div class="btn-row" style="margin-bottom:10px"><button class="btn btn-danger" id="delCust" type="button">' + icon('trash', 18) + '删除客户</button></div>'
+        : '<div class="btn-row" style="margin-bottom:10px"><button class="btn btn-ghost" id="saveCustMore" type="button">存下再录一位</button></div>') +
+      '  <button class="btn btn-primary" id="saveCust" type="button">' + (c ? '保存' : '保存并查看') + '</button>' +
+      '</div>',
+      function () { if (created) render(); }
     );
 
-    setTimeout(function () { $('#cName', sheet).focus(); }, 320);
+    var nameEl = $('#cName', sheet), phoneEl = $('#cPhone', sheet), noteEl = $('#cNote', sheet);
+    setTimeout(function () { nameEl.focus(); }, 320);
+
+    /** 校验姓名（唯一、非空），返回 info 或 null */
+    function readForm() {
+      var name = nameEl.value.trim();
+      if (!name) { toast('姓名总得有一个', 'err'); nameEl.focus(); return null; }
+      var dup = Store.findCustomerByName(name);
+      if (dup && (!c || dup.id !== c.id)) { toast('已经有这位客户了', 'err'); nameEl.focus(); return null; }
+      return { name: name, phone: phoneEl.value.trim(), note: noteEl.value.trim() };
+    }
 
     var del = $('#delCust', sheet);
     if (del) del.addEventListener('click', function () {
@@ -1761,17 +1789,36 @@
       });
     });
 
+    // 存下再录一位：不关抽屉，清空接着录
+    var more = $('#saveCustMore', sheet);
+    if (more) more.addEventListener('click', function () {
+      var info = readForm();
+      if (!info) return;
+      if (!Store.addCustomer(info)) { toast('保存失败', 'err'); return; }
+      created++;
+      nameEl.value = ''; phoneEl.value = ''; noteEl.value = '';
+      var tip = $('#cTip', sheet);
+      if (tip) tip.innerHTML = '已存下 <b>' + created + '</b> 位，接着录下一位。';
+      toast('已存下「' + info.name + '」', 'ok', 1400);
+      nameEl.focus();
+    });
+
     $('#saveCust', sheet).addEventListener('click', function () {
-      var name = $('#cName', sheet).value.trim();
-      if (!name) { toast('姓名总得有一个', 'err'); $('#cName', sheet).focus(); return; }
-      var dup = Store.findCustomerByName(name);
-      if (dup && (!c || dup.id !== c.id)) { toast('已经有这位客户了', 'err'); return; }
-      var info = { name: name, phone: $('#cPhone', sheet).value.trim(), note: $('#cNote', sheet).value.trim() };
-      if (c) Store.updateCustomer(c.id, info);
-      else Store.addCustomer(info);
-      closeSheet();
-      toast('已保存', 'ok');
-      render();
+      var info = readForm();
+      if (!info) return;
+      if (c) {
+        Store.updateCustomer(c.id, info);
+        closeSheet();
+        toast('已保存', 'ok');
+        render();
+      } else {
+        var nc = Store.addCustomer(info);
+        if (!nc) { toast('保存失败', 'err'); return; }
+        created = 0;                 // 下面 go() 会自己重绘，避免关闭回调再渲染一次
+        closeSheet();
+        toast('已存下「' + nc.name + '」，可以记账了', 'ok', 2000);
+        go('#/c/' + nc.id);
+      }
     });
   }
 

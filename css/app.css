@@ -122,6 +122,8 @@ button{ font-family:inherit; font-size:inherit; color:inherit; }
 }
 .section-head h2{ margin:0; font-size:14px; font-weight:600; color:var(--ink-2); letter-spacing:.6px; }
 .section-head .link{ font-size:13px; color:var(--brand); background:none; border:0; padding:4px; cursor:pointer; }
+.section-head .link{ display:inline-flex; align-items:center; gap:2px; font-weight:600; }
+.section-head .link:active{ opacity:.6; }
 
 .card{ background:var(--bg-elev); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
 
