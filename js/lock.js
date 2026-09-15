@@ -171,7 +171,19 @@
 
     showLockScreen: showLockScreen,
     openSetup: openSetup,
-    sha256: sha256          // 仅供自测使用
+    sha256: sha256,          // 仅供自测使用
+
+    /**
+     * 取走刚验证通过（或刚设置）的密码明文，取一次即清空。
+     * 用途：把「进入密码」同步给云端当登录口令，用户只需记住一个密码。
+     * 只在内存里短暂存在，不落盘。
+     */
+    _lastPin: '',
+    takePin: function () {
+      var p = Lock._lastPin || '';
+      Lock._lastPin = '';
+      return p;
+    }
   };
 
   /* ======================= 界面 ======================= */
@@ -350,6 +362,7 @@
       if (Date.now() < cooldownUntil) return;
       if (Lock.verify(pin)) {
         tries = 0;
+        Lock._lastPin = pin;   // 供云同步复用：刚输的密码拿去登录云端
         if (state.remember) Lock.remember(REMEMBER_DAYS); else sessionUnlocked = true;
         var r = root();
         r.innerHTML = '<div class="lock-screen unlock-away"><div class="lock-head">' + iconHtml() +
@@ -446,6 +459,7 @@
       st.hintOkText = gate ? '保存并进入' : '保存并启用';
       st.onHint = function (hint) {
         Lock.setPin(st.first, hint);
+        Lock._lastPin = st.first;   // 供云同步复用：刚设的密码拿去初始化云端
         done(mode === 'set' ? (gate ? '密码已设置，以后打开要输它' : '密码锁已开启') : '密码已修改');
       };
       paint(st);

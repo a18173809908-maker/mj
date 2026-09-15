@@ -46,7 +46,8 @@
     filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
     lock: '<rect x="4.8" y="10.5" width="14.4" height="9.7" rx="2.2"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.6 0v2.7"/><circle cx="12" cy="15.3" r="1.1" fill="currentColor" stroke="none"/>',
     unlock: '<rect x="4.8" y="10.5" width="14.4" height="9.7" rx="2.2"/><path d="M8.2 10.5V7.8a3.8 3.8 0 0 1 7.3-1.2"/>',
-    moon: '<path d="M20 14.4A8.4 8.4 0 0 1 9.6 4a8.5 8.5 0 1 0 10.4 10.4Z"/>'
+    moon: '<path d="M20 14.4A8.4 8.4 0 0 1 9.6 4a8.5 8.5 0 1 0 10.4 10.4Z"/>',
+    cloud: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10Z"/>'
   };
 
   /** 头像首字 + 配色 class */

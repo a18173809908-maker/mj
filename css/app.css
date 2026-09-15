@@ -793,6 +793,17 @@ body.locked .fab{ visibility:hidden; }
 .mini.ghost{ border-color:var(--line); background:var(--bg-elev); color:var(--ink-2); }
 .mini:active{ filter:brightness(.96); }
 
+/* ---------- v2.0 云端备份 ---------- */
+.cloud-state{ display:flex; align-items:center; gap:9px; padding:13px 14px 2px; }
+.cloud-dot{ width:9px; height:9px; border-radius:50%; flex:none; background:#9aa5a0; }
+.cloud-dot.ok{ background:#1e8e5a; box-shadow:0 0 0 3px rgba(30,142,90,.14); }
+.cloud-dot.warn{ background:#c98a1b; box-shadow:0 0 0 3px rgba(201,138,27,.16); }
+.cloud-dot.off{ background:#9aa5a0; box-shadow:0 0 0 3px rgba(154,165,160,.16); }
+.cloud-txt{ font-size:14.5px; font-weight:600; }
+.cloud-sub{ font-size:12px; color:var(--ink-2); padding:3px 14px 11px; line-height:1.5; }
+.btn-col{ display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+.btn-col .btn{ width:100%; }
+
 /* ---------- v1.6 开台抽屉：瘦身 ---------- */
 
 /* 字段与数值同行 */

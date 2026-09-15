@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '1.8.0';
+  var VERSION = '2.0.0';
 
   var state = {
     route: 'home',
@@ -1408,8 +1408,10 @@
       '  <button class="list-item" id="impJson" type="button"><span class="li-ico">' + icon('up', 21) + '</span>' +
       '    <span class="li-txt">导入备份<span class="li-desc">选择之前导出的 json 文件恢复</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
       '  <button class="list-item" id="expCsv" type="button"><span class="li-ico">' + icon('doc', 21) + '</span>' +
-      '    <span class="li-txt">导出 Excel 表格<span class="li-desc">往来流水 + 余额汇总 + 营收明细</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
+        '    <span class="li-txt">导出 Excel 表格<span class="li-desc">往来流水 + 余额汇总 + 营收明细</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
       '</div></div>' +
+
+      cloudSectionHtml() +
 
       '<div class="section"><div class="section-head"><h2>客户名单</h2></div><div class="card">' +
       '  <button class="list-item" id="addOneCust" type="button"><span class="li-ico">' + icon('smile', 21) + '</span>' +
@@ -1425,10 +1427,12 @@
 
       '<div class="section"><div class="section-head"><h2>关于</h2></div><div class="card">' +
       '  <div class="list-item" style="cursor:default"><span class="li-ico">' + icon('info', 21) + '</span>' +
-      '    <span class="li-txt">往来账 v' + VERSION + '<span class="li-desc">所有数据仅保存在本机浏览器中，不会上传到任何服务器。建议定期用「导出备份」存档。</span></span></div>' +
+      '    <span class="li-txt">往来账 v' + VERSION + '<span class="li-desc">账目平时存在本机，同时自动备份到你自己服务器（见上方「云端备份」）。换手机用同一个密码登录即可。</span></span></div>' +
       '</div></div>';
 
     view.innerHTML = html;
+
+    mountCloud();
 
     /* --- 密码锁（强制开启，不提供关闭入口） --- */
     var changePinBtn = $('#changePin');
@@ -1494,9 +1498,11 @@
     $('#impNames').addEventListener('click', openNamesSheet);
     $('#addOneCust').addEventListener('click', function () { openCustomerSheet(null); });
     $('#clearAll').addEventListener('click', function () {
+      var cloudOn = !!(global.Cloud && Cloud.enabled() && Cloud.loggedIn() && Cloud.available() !== false);
       confirmDlg({
         title: '清空全部数据？',
-        text: '所有客户、流水、营收都会被删除且无法恢复。建议先「导出备份」。',
+        text: '所有客户、流水、营收都会被删除且无法恢复。建议先「导出备份」。' +
+          (cloudOn ? '（云端备份也会一并清空，但云端的历史版本仍然留着，能翻回来）' : ''),
         okText: '清空', danger: true
       }).then(function (yes) {
         if (!yes) return;
@@ -1919,6 +1925,334 @@
     });
   }
 
+  /* ================= 云端备份（v2.0） ================= */
+
+  function cloudWhen(ts) {
+    if (!ts) return '';
+    var d = new Date(ts), n = new Date();
+    var t = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+    if (d.toDateString() === n.toDateString()) return '今天 ' + t;
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + t;
+  }
+
+  /** 「我的」页里那块云端状态 + 操作 */
+  function cloudSectionHtml() {
+    if (!global.Cloud) return '';
+    var s = Cloud.status();
+    var info = s.info || {};
+    var sub = [];
+    if (s.available && info.counts) {
+      sub.push(info.counts.customers + ' 客户 · ' + info.counts.incomes + ' 场 · ' + info.counts.txs + ' 流水');
+    }
+    if (s.rev) sub.push('云端 v' + s.rev);
+    if (s.lastSyncAt) sub.push('上次同步 ' + cloudWhen(s.lastSyncAt));
+    if (!sub.length) {
+      if (s.available === false) {
+        sub.push(s.lastSyncAt
+          ? '暂时连不上云端，账目都在本机；点「立即同步」重试'
+          : '这台服务器上还没有云端程序，账目只存在本机');
+      } else {
+        sub.push('把账目存到服务器，换手机、清缓存都不怕');
+      }
+    }
+
+    var rows = '';
+    if (!s.loggedIn) {
+      // 只有「还没登录上云端」才把入口收成「连接」。已经登录过的，网络抖一下不该
+      // 把「立即同步」换掉——不然一时断网就没法手动重试了。
+      var cdesc = (s.available === false)
+        ? '点这里试试；若提示不可用，说明服务器还没装云端程序'
+        : '输入你的进入密码即可连上';
+      rows +=
+        '  <button class="list-item" id="cloudConnect" type="button"><span class="li-ico">' + icon('cloud', 21) + '</span>' +
+        '    <span class="li-txt">连接云端备份<span class="li-desc">' + cdesc + '</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>';
+    } else {
+      rows +=
+        '  <button class="list-item" id="cloudNow" type="button"><span class="li-ico">' + icon('swap', 21) + '</span>' +
+        '    <span class="li-txt">立即同步<span class="li-desc">把本机改动传上去，顺手拉回别处的改动</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
+        '  <button class="list-item" id="cloudHistory" type="button"><span class="li-ico">' + icon('doc', 21) + '</span>' +
+        '    <span class="li-txt">云端版本历史<span class="li-desc">每次同步都留一份，随时能翻回旧版本</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
+        '  <button class="list-item" id="cloudDownload" type="button"><span class="li-ico">' + icon('down', 21) + '</span>' +
+        '    <span class="li-txt">下载云端备份<span class="li-desc">存到手机里，换机或存档用</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
+        '  <button class="list-item" id="cloudConnect" type="button"><span class="li-ico">' + icon('unlock', 21) + '</span>' +
+        '    <span class="li-txt">重新连接<span class="li-desc">换了密码或掉线时，重新登录云端</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>';
+    }
+
+    return '<div class="section"><div class="section-head"><h2>云端备份</h2></div><div class="card" id="cloudBox">' +
+      '  <div class="cloud-state"><span class="cloud-dot ' + (s.tone || 'off') + '"></span>' +
+      '    <span class="cloud-txt">' + esc(s.text || '') + '</span></div>' +
+      '  <div class="cloud-sub">' + esc(sub.join(' · ')) + '</div>' +
+      rows + '</div></div>';
+  }
+
+  /** 连接 / 重新连接云端 */
+  function openCloudConnectSheet() {
+    var sheet = openSheet(
+      sheetHead('连接云端备份') +
+      '<div class="sheet-body">' +
+      '  <p class="hint">输入你的「进入密码」——就是打开这个应用时输的那个，云端用同一个密码，不用记两个。</p>' +
+      '  <div class="field"><label>进入密码</label>' +
+      '    <input class="input" id="cloudPw" type="password" inputmode="numeric" autocomplete="current-password" placeholder="4-6 位数字"></div>' +
+      '  <div class="field"><label>密码提示（选填）</label>' +
+      '    <input class="input" id="cloudHint" type="text" maxlength="20" placeholder="忘了时给自己看的提示"></div>' +
+      '  <p class="hint" id="cloudMsg"></p>' +
+      '</div>' +
+      '<div class="sheet-foot"><button class="btn btn-primary" id="cloudGo" type="button">连接</button></div>'
+    );
+
+    var msg = function (t, bad) {
+      var el = $('#cloudMsg', sheet);
+      if (el) { el.textContent = t || ''; el.style.color = bad ? 'var(--danger,#c0392b)' : ''; }
+    };
+    var busy = false;
+
+    function submit() {
+      if (busy) return;
+      var pw = ($('#cloudPw', sheet) || {}).value || '';
+      var hint = ($('#cloudHint', sheet) || {}).value || '';
+      if (pw.length < 4) { msg('密码至少 4 位', true); return; }
+      busy = true;
+      var btn = $('#cloudGo', sheet);
+      if (btn) { btn.disabled = true; btn.textContent = '连接中…'; }
+      Cloud.ping(function (perr, info) {
+        if (perr || !info) {
+          busy = false;
+          if (btn) { btn.disabled = false; btn.textContent = '连接'; }
+          msg('连不上云端：这台服务器上可能还没装云端程序，或当前网络不通', true);
+          return;
+        }
+        var next = function (e) {
+          busy = false;
+          if (e) {
+            if (btn) { btn.disabled = false; btn.textContent = '连接'; }
+            msg(e.error || '连接失败', true);
+            return;
+          }
+          msg('连上了，正在同步…');
+          Cloud.sync({}, function (e2, r) {
+            closeSheet();
+            if (e2 || !r) { toast('已连接云端', 'ok'); render(); return; }
+            cloudHandleResult(r, true);
+          });
+        };
+        if (info.needsSetup) Cloud.setup(pw, hint, next);
+        else Cloud.login(pw, next);
+      });
+    }
+
+    $('#cloudGo', sheet).addEventListener('click', submit);
+    var inp = $('#cloudPw', sheet);
+    if (inp) {
+      inp.focus();
+      inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+    }
+  }
+
+  /** 云端版本历史（可回滚 / 下载） */
+  function openCloudHistorySheet() {
+    var sheet = openSheet(
+      sheetHead('云端版本历史') +
+      '<div class="sheet-body" id="chBody"><p class="hint">正在读取…</p></div>'
+    );
+    var body = $('#chBody', sheet);
+
+    function paint(data) {
+      var list = (data.list || []).slice(0, 40);
+      var daily = (data.daily || []).slice(0, 10);
+      var html = '<p class="hint">每同步一次就留一个版本，最多保留最近 60 个 + 每天首个（90 天）。选一个可以下载到手机，或者直接翻回那一天。</p>';
+      if (!list.length) html += '<p class="hint">云端还没有版本。</p>';
+      else {
+        html += '<div class="glist">' + list.map(function (v) {
+          var isCur = v.rev === data.currentRev;
+          return '<div class="grow" style="align-items:center">' +
+            '<span class="grow-name">v' + v.rev + (isCur ? ' · 当前' : '') +
+            '<span class="cloud-sub" style="display:block">' + esc(cloudWhen(v.ts * 1000)) + ' · ' + v.counts.customers + '客户/' + v.counts.incomes + '场/' + v.counts.txs + '流水' +
+            (v.device ? ' · ' + esc(v.device) : '') + '</span></span>' +
+            '<span class="grow-sum">' +
+            '<button class="mini" type="button" data-dl="' + v.rev + '">下载</button>' +
+            (isCur ? '' : ' <button class="mini ghost" type="button" data-rs="' + v.rev + '">恢复</button>') +
+            '</span></div>';
+        }).join('') + '</div>';
+      }
+      if (daily.length) {
+        html += '<p class="hint" style="margin-top:14px">每日备份（长期保留）</p><div class="glist">' + daily.map(function (v) {
+          return '<div class="grow" style="align-items:center"><span class="grow-name">' + esc(v.date) +
+            '<span class="cloud-sub" style="display:block">' + v.counts.customers + '客户/' + v.counts.incomes + '场/' + v.counts.txs + '流水</span></span>' +
+            '<span class="grow-sum"><button class="mini" type="button" data-dl="' + esc(v.date) + '">下载</button>' +
+            ' <button class="mini ghost" type="button" data-rs="' + esc(v.date) + '">恢复</button></span></div>';
+        }).join('') + '</div>';
+      }
+      body.innerHTML = html;
+
+      body.querySelectorAll('[data-dl]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var rev = b.getAttribute('data-dl');
+          window.open(Cloud.downloadUrl(rev), '_blank');
+          toast('已开始下载，去浏览器「下载」里找', 'ok', 2200);
+        });
+      });
+      body.querySelectorAll('[data-rs]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var rev = b.getAttribute('data-rs');
+          confirmDlg({
+            title: '恢复到 ' + rev,
+            html: '把云端翻回这个版本，<b>然后同步到本机</b>。<br><br>' +
+              '当前版本不会丢——它还在历史里，随时能再翻回来。',
+            okText: '恢复',
+            cancelText: '算了'
+          }).then(function (yes) {
+            if (!yes) return;
+            Cloud.restore(rev, function (err) {
+              if (err) { toast(err.error || '恢复失败', 'err'); return; }
+              closeSheet(true);
+              toast('已恢复到 ' + rev, 'ok');
+              render();
+            });
+          });
+        });
+      });
+    }
+
+    Cloud.history(function (err, data) {
+      if (err) {
+        body.innerHTML = '<p class="hint">读不到云端历史：' + esc(err.error || '连不上云端') + '</p>';
+        return;
+      }
+      paint(data);
+    });
+  }
+
+  /** 三个选项的对话框（云端冲突时用） */
+  function cloudChooseDlg(opts) {
+    return new Promise(function (resolve) {
+      var root = $('#dialog-root');
+      root.innerHTML =
+        '<div class="dlg-mask">' +
+        '  <div class="dlg" role="dialog" aria-modal="true">' +
+        '    <h3>' + esc(opts.title) + '</h3>' +
+        '    <p>' + (opts.html || '') + '</p>' +
+        '    <div class="btn-col">' +
+        opts.options.map(function (o, i) {
+          return '<button class="btn ' + (o.primary ? 'btn-primary' : 'btn-ghost') + '" data-opt="' + i + '">' + esc(o.label) + '</button>';
+        }).join('') +
+        '    </div>' +
+        '  </div>' +
+        '</div>';
+      var mask = $('.dlg-mask', root);
+      requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
+      function done(i) {
+        mask.classList.remove('show');
+        setTimeout(function () { root.innerHTML = ''; }, 200);
+        resolve(i);
+      }
+      root.querySelectorAll('[data-opt]').forEach(function (b) {
+        b.addEventListener('click', function () { done(Number(b.getAttribute('data-opt'))); });
+      });
+      mask.addEventListener('click', function (e) { if (e.target === mask) done(-1); });
+    });
+  }
+
+  /** 云端与本机都有改动：让用户选，绝不自动猜 */
+  function cloudConflict(info) {
+    var when = info.savedAt ? cloudWhen(Date.parse(info.savedAt)) : '';
+    cloudChooseDlg({
+      title: '云端和本机都有改动',
+      html: '云端现在是 <b>v' + (info.rev || '?') + '</b>' + (when ? '（' + when + '）' : '') +
+        (info.device ? '，来自「' + esc(info.device) + '」' : '') + '。<br><br>' +
+        '两个都留着，你选一个：<br>· 用云端的 → 本机改成云端的版本<br>· 用本机的 → 把云端覆盖掉（云端当前版本仍会留在历史里）',
+      options: [
+        { label: '用云端的（本机改成云端）', primary: true },
+        { label: '用本机的（覆盖云端）' },
+        { label: '先不动，我自己看看' }
+      ]
+    }).then(function (i) {
+      if (i === 0) {
+        Cloud.pull(true, function (err) {
+          if (err) { toast(err.error || '拉取失败', 'err'); return; }
+          toast('已改成云端的版本', 'ok');
+          render();
+        });
+      } else if (i === 1) {
+        Cloud.push({ force: true }, function (err) {
+          if (err) { toast(err.error || '上传失败', 'err'); return; }
+          toast('已用本机覆盖云端', 'ok');
+          renderMe();
+        });
+      }
+    });
+  }
+
+  /** 处理一次同步结果 */
+  function cloudHandleResult(r, quiet) {
+    if (!r) return;
+    if (r.state === 'pulled') {
+      if (!quiet) toast('已从云端更新到 v' + r.rev, 'ok');
+      render();
+    } else if (r.state === 'pushed') {
+      if (!quiet) toast('已备份到云端 v' + r.rev, 'ok');
+      renderMe();
+    } else if (r.state === 'conflict') {
+      cloudConflict(r);
+    } else if (r.state === 'needSetup' || r.state === 'needLogin') {
+      if (state.route === 'me') renderMe();
+    } else if (r.state === 'offline' || r.state === 'off') {
+      if (!quiet && state.route === 'me') renderMe();
+    }
+  }
+
+  /** 启动时接云端：后端不在就完全静默，App 照常当单机用 */
+  function cloudBoot() {
+    if (!global.Cloud) return;
+    Cloud.onchange = function () {
+      var box = $('#cloudBox');
+      if (state.route === 'me' && box) {
+        var wrap = document.createElement('div');
+        wrap.innerHTML = cloudSectionHtml();
+        var fresh = $('#cloudBox', wrap);
+        if (fresh) { box.innerHTML = fresh.innerHTML; mountCloud(); }
+      }
+    };
+    Cloud.ping(function (err, info) {
+      if (err || !info) return;            // 没装后端 / 断网 → 静默
+      var pin = (global.Lock && Lock.takePin) ? Lock.takePin() : '';
+      var afterAuth = function () {
+        Cloud.sync({}, function (e, r) {
+          if (r && r.state === 'pulled') { toast('已从云端同步最新账目', 'ok'); render(); }
+          else cloudHandleResult(r, true);
+        });
+      };
+      if (info.needsSetup) {
+        if (pin) Cloud.setup(pin, '', function (e) { if (!e) afterAuth(); });
+        return;
+      }
+      if (!Cloud.loggedIn()) {
+        if (pin) Cloud.login(pin, function (e) { if (!e) afterAuth(); });
+        return;
+      }
+      afterAuth();
+    });
+  }
+
+  function mountCloud() {
+    var c = $('#cloudConnect');
+    if (c) c.addEventListener('click', openCloudConnectSheet);
+    var n = $('#cloudNow');
+    if (n) n.addEventListener('click', function () {
+      toast('正在同步…', 'ok', 1200);
+      Cloud.syncNow(function (err, r) {
+        if (err) toast(err.error || '同步失败', 'err');
+        else cloudHandleResult(r);
+      });
+    });
+    var h = $('#cloudHistory');
+    if (h) h.addEventListener('click', openCloudHistorySheet);
+    var d = $('#cloudDownload');
+    if (d) d.addEventListener('click', function () {
+      window.open(Cloud.downloadUrl(), '_blank');
+      toast('已开始下载，去浏览器「下载」里找', 'ok', 2200);
+    });
+  }
+
   /* ================= 路由 ================= */
 
   function render() {
@@ -1952,6 +2286,16 @@
   function bootApp() {
     Store.load();
     render();
+
+    // 云端：有后端就自动连、自动同步；没有就静默当单机用
+    cloudBoot();
+
+    // 从后台切回前台时顺手同步一次（手机常见场景）
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible' && global.Cloud && Cloud.loggedIn()) {
+        Cloud.sync({}, function (e, r) { cloudHandleResult(r, true); });
+      }
+    });
 
     // PWA：https / localhost 下注册离线缓存
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {

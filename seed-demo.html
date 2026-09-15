@@ -80,6 +80,11 @@ document.getElementById('go').addEventListener('click', function () {
   try {
     if (window.Lock && !Lock.isSet()) { Lock.setPin('1234', '演示密码'); Lock.remember(1); }
   } catch (e) {}
+  // v2.0 起有云端备份：演示数据绝不能传到线上账本，先把云端登录断开
+  try {
+    localStorage.removeItem('ledger_mahjong_token');
+    localStorage.removeItem('ledger_mahjong_cloud');
+  } catch (e) {}
   location.replace('./');
 });
 </script>

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  var CACHE = 'ledger-mahjong-v10';
+  var CACHE = 'ledger-mahjong-v11';
   var ASSETS = [
     './',
     './index.html',
@@ -14,6 +14,7 @@
     './js/store.js',
     './js/ui.js',
     './js/lock.js',
+    './js/cloud.js',
     './js/app.js',
     './assets/icon-192.png',
     './assets/icon-512.png',
@@ -51,6 +52,9 @@
   self.addEventListener('fetch', function (e) {
     var req = e.request;
     if (req.method !== 'GET') return;
+
+    // 云端接口：一律直连，绝不进缓存（否则会读到旧账本）
+    if (req.url.indexOf('/api/') >= 0) return;
 
     // 页面：先要网络（拿到最新版），断网再回退缓存
     if (isDocument(req)) {

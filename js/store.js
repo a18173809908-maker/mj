@@ -120,6 +120,15 @@ function humanDate(s) {
     /* ---------- 持久化 ---------- */
 
     load: function () {
+      this._loading = true;
+      try {
+        return this._load();
+      } finally {
+        this._loading = false;
+      }
+    },
+
+    _load: function () {
       var raw = null;
       try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { /* 隐私模式 */ }
       if (raw) {
@@ -173,14 +182,55 @@ function humanDate(s) {
       if (changed) this.save();
     },
 
+    /** 载入/应用远端数据期间为 true：此时 save() 不算"用户改动"，不上传云端 */
+    _loading: false,
+
     save: function () {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+        // 通知云同步：本机有改动（载入过程与云端覆盖过程除外）
+        if (!this._loading && global.Cloud && typeof Cloud.onLocalChange === 'function') {
+          try { Cloud.onLocalChange(); } catch (e) {}
+        }
         return true;
       } catch (e) {
         console.error('[store] 保存失败', e);
         return false;
       }
+    },
+
+    /**
+     * 用云端数据覆盖本机（同步拉取 / 版本回滚时调用）
+     * 与 importJSON(replace) 的区别：不触发云端上传，且做了自愈清理
+     */
+    applyRemote: function (data) {
+      if (!data || typeof data !== 'object') return false;
+      this._loading = true;
+      try {
+        this.data.customers = Array.isArray(data.customers) ? data.customers : [];
+        this.data.txs = Array.isArray(data.txs) ? data.txs : [];
+        this.data.incomes = Array.isArray(data.incomes) ? data.incomes : [];
+        this.data.settings = (data.settings && typeof data.settings === 'object') ? data.settings : {};
+        this.data.version = data.version || 2;
+        this.migrate();
+        // 自愈：剔除指向不存在客户的流水
+        var ids = {};
+        this.data.customers.forEach(function (c) { ids[c.id] = 1; });
+        this.data.txs = this.data.txs.filter(function (t) { return ids[t.customerId]; });
+        this.save();
+      } finally {
+        this._loading = false;
+      }
+      return true;
+    },
+
+    /** 数据条数（云端状态展示用） */
+    counts: function () {
+      return {
+        customers: this.data.customers.length,
+        txs: this.data.txs.length,
+        incomes: this.data.incomes.length
+      };
     },
 
     /* ---------- 客户 ---------- */
