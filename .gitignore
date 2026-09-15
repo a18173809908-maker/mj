@@ -1,0 +1,15 @@
+# 工作目录私有文件（WorkBuddy 会话数据、发布信息）
+.workbuddy/
+.wbapp_*.genie
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# 临时文件
+*.log
+*.tmp
+__pycache__/
