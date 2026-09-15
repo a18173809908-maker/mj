@@ -13,3 +13,7 @@ desktop.ini
 *.log
 *.tmp
 __pycache__/
+
+# 云端后端运行时数据（账本、密码哈希、历史快照——绝不入库）
+server/node/data/
+server/api/data/

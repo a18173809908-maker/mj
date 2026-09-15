@@ -1,11 +1,20 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""云端后端一体化测试：组装干净站点 → 起 PHP 服务 → 跑接口测试 → 收尾
+"""云端后端一体化测试：组装干净站点 → 起服务 → 跑接口测试 → 跑端到端 → 收尾
 
 用法：
-    python tools/run-cloud-tests.py
+    python tools/run-cloud-tests.py                     # 默认测 Node 后端
+    python tools/run-cloud-tests.py --backend=php       # 测 PHP 后端
+    python tools/run-cloud-tests.py --api-only          # 只跑接口断言，不跑浏览器
+
+两种后端的差别只在「怎么把服务起起来」，接口测试与端到端测试完全共用：
+    php  → php -S 一个进程，静态 + /api 全包
+    node → node server.js 只跑 /api；再用 tools/dev-gateway.js 提供静态并反代 /api
+           （这样浏览器测试跑在与生产 nginx 相同的路径结构下）
+
 环境变量：
-    MJ_PHP   PHP 可执行文件路径（默认用托管目录里的便携版）
+    MJ_PHP    PHP 可执行文件路径（默认用托管目录里的便携版）
+    MJ_NODE   Node 可执行文件路径（默认用托管目录里的版本）
 """
 import os
 import shutil
@@ -22,14 +31,21 @@ sys.path.insert(0, HERE)
 import stage_site  # noqa: E402
 
 DEFAULT_PHP = r'C:\Users\Administrator\.workbuddy\binaries\php\php83\php.exe'
-NODE_WORKSPACE = r'C:\Users\Administrator\.workbuddy\binaries\node\workspace'
 DEFAULT_NODE = r'C:\Users\Administrator\.workbuddy\binaries\node\versions\22.22.2-3\node.exe'
+NODE_WORKSPACE = r'C:\Users\Administrator\.workbuddy\binaries\node\workspace'
 
 
 def php_bin():
     p = os.environ.get('MJ_PHP') or DEFAULT_PHP
     if not os.path.exists(p):
         sys.exit('找不到 PHP：%s（可用环境变量 MJ_PHP 指定）' % p)
+    return p
+
+
+def node_bin():
+    p = os.environ.get('MJ_NODE') or DEFAULT_NODE
+    if not os.path.exists(p):
+        sys.exit('找不到 Node：%s（可用环境变量 MJ_NODE 指定）' % p)
     return p
 
 
@@ -41,7 +57,7 @@ def free_port():
     return port
 
 
-def wait_ready(base, timeout=20):
+def wait_ready(base, timeout=25):
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
@@ -53,20 +69,55 @@ def wait_ready(base, timeout=20):
     return False
 
 
+def start_php_backend(stage, port):
+    """PHP：一个内置服务器同时提供静态文件与 /api"""
+    print('启动 PHP 内置服务 http://127.0.0.1:%d ...' % port)
+    proc = subprocess.Popen(
+        [php_bin(), '-S', '127.0.0.1:%d' % port, '-t', stage],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=stage)
+    return [proc]
+
+
+def start_node_backend(stage, port):
+    """Node：server.js 只跑 /api，dev-gateway.js 提供静态并反代 /api（模拟 nginx）"""
+    api_port = free_port()
+    env = dict(os.environ)
+    env['PORT'] = str(api_port)
+    env['HOST'] = '127.0.0.1'
+    # 数据落到 stage/api/data，与 PHP 版位置一致，方便统一清理
+    env['LEDGER_DATA_DIR'] = os.path.join(stage, 'api', 'data')
+    env['NODE_PATH'] = os.path.join(NODE_WORKSPACE, 'node_modules')
+
+    print('启动 Node 后端 127.0.0.1:%d（仅 /api）...' % api_port)
+    api = subprocess.Popen(
+        [node_bin(), os.path.join(ROOT, 'server', 'node', 'server.js')],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+
+    print('启动测试网关 http://127.0.0.1:%d（静态 + /api 反代）...' % port)
+    gw = subprocess.Popen(
+        [node_bin(), os.path.join(HERE, 'dev-gateway.js'), stage, str(port), str(api_port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    return [api, gw]
+
+
 def main():
     api_only = '--api-only' in sys.argv
-    php = php_bin()
+    backend = 'node'
+    for a in sys.argv[1:]:
+        if a.startswith('--backend='):
+            backend = a.split('=', 1)[1].strip().lower()
+    if backend not in ('node', 'php'):
+        sys.exit('--backend 只支持 node 或 php')
+
     port = free_port()
     base = 'http://127.0.0.1:%d' % port
     stage = os.path.join(tempfile.gettempdir(), 'mjcloud-test')
 
+    print('后端类型：%s' % backend)
     print('组装干净站点 ...')
     stage_site.stage(stage)
 
-    print('启动 PHP 内置服务 %s ...' % base)
-    proc = subprocess.Popen(
-        [php, '-S', '127.0.0.1:%d' % port, '-t', stage],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=stage)
+    procs = start_php_backend(stage, port) if backend == 'php' else start_node_backend(stage, port)
 
     code = 1
     try:
@@ -87,24 +138,24 @@ def main():
             env = dict(os.environ)
             env['MJ_BASE'] = base
             env['NODE_PATH'] = os.path.join(NODE_WORKSPACE, 'node_modules')
-            node = os.environ.get('MJ_NODE') or DEFAULT_NODE
             e2e = subprocess.run(
-                [node, os.path.join(NODE_WORKSPACE, 'test-v20.js')],
+                [node_bin(), os.path.join(NODE_WORKSPACE, 'test-v20.js')],
                 cwd=NODE_WORKSPACE, env=env).returncode
             if e2e != 0:
                 code = e2e
     finally:
-        try:
-            proc.terminate()
-            proc.wait(timeout=8)
-        except Exception:
+        for p in procs:
             try:
-                proc.kill()
+                p.terminate()
+                p.wait(timeout=8)
             except Exception:
-                pass
+                try:
+                    p.kill()
+                except Exception:
+                    pass
         time.sleep(0.4)
         shutil.rmtree(stage, ignore_errors=True)
-        print('\n已收尾（PHP 服务已停止，测试站点已清理）')
+        print('\n已收尾（服务已停止，测试站点已清理）')
     return code
 
 

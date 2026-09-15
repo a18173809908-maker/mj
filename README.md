@@ -60,30 +60,37 @@
 - **版本历史**：每次同步留一个版本（滚动保留最近 60 个 + 每天首个保留 90 天），随时能翻回旧版本，**回滚本身也能再回滚**；
 - **两台设备都有改动时不会自动猜**，弹窗让用户选「用云端的 / 用本机的」，两边的旧版本都还在历史里；
 - **没有后端 / 断网时完全降级**：一切照常当单机用，不报错、不阻塞，联网后自动补传；
-- 部署方法见 **`deploy/云端部署指引.md`**（后台是纯 PHP，**不需要数据库**）。
+- 部署方法见 **`deploy/Node后端部署指引.md`**（后台主用 **Node 版：零依赖，不需要 PHP，不需要数据库**）；
+  PHP 版作为备选保留，见 `deploy/云端部署指引.md`——两套接口逐字段一致，前端一行都不用改。
 
 ## 数据安全（重要）
 
 - 账目**日常存在手机浏览器本地**（`localStorage`），断网照常记账；
-- 同时**自动备份到自己的服务器**（`api/data/ledger.json` + 每次同步的历史版本），所以：
+- 同时**自动备份到自己的服务器**（后端数据目录里的 `ledger.json` + 每次同步的历史版本；Node 版默认在 `ledger-api-node/data/`），所以：
   - 换手机 → 同一个密码登录就把账搬过去；
   - 手机上清了浏览器数据 → 用「云端备份 → 重新连接」把账拉回来；
   - 记错 / 误删 → 「云端版本历史 → 恢复」翻回那一天的版本。
 - 依旧建议偶尔用「**导出备份文件**」在手机里留一份 json（换机、离线存档用）；
-- ⚠️ 服务器上的 `api/data/` 是账本本体，**不要删**。`api/data/daily/` 里的 json 可以下载到电脑当冷备份。
+- ⚠️ 后端的数据目录（Node 版 `ledger-api-node/data/`、PHP 版 `api/data/`）是账本本体，**不要删**。里面的 `daily/` 可以直接下载到电脑当冷备份。
 
 ## 技术备注
 
 - 纯原生 HTML/CSS/JS 单页应用，零依赖、零构建；PWA（manifest + service worker）支持离线与主屏幕安装。
 - 牌局模型：一场牌有生命周期（open/closed），场内的借款/还款/挂账全部以流水形式存储并用场次 ID 双向关联——真相只有一份，改删场次自动同步，不会两边对不上。
 - 登录门禁为**本地**门禁：SHA-256 加盐 3000 轮迭代存 localStorage（HTTP 下无 WebCrypto，故内置纯 JS 实现）；**同一个密码同时用于云端登录**，用户只需记一个。
-- 云端后台（`server/api/`，部署后位于站点的 `api/`）：
-  - 纯 PHP（≥7.2，无框架、**无数据库**），账本以 JSON 文件存 `api/data/`，原子写（临时文件 + rename）+ `flock` 排他锁；
-  - 密码 PBKDF2-SHA256（2 万轮 + 随机盐，只存哈希）；登录令牌是无状态 HMAC-SHA256（默认 90 天），**不落盘**；改密码即轮换签名密钥，旧设备令牌全部失效；
-  - 连续错密码 8 次锁 10 分钟；错误接口 400/401/404/409/429 语义分明；
-  - 版本冲突用 `baseRev` 乐观锁检测，返回 409 交给前端让用户决定；
-  - `api/setup.php` 是自检页，会**自动探测 `api/data/` 是否可被外网直接下载**并给出 nginx 伪静态规则。
+- 云端后台有**两套等价实现**，接口、状态码、错误语义逐字段一致（同一套 116 项测试两边都跑通）：
+  - **`server/node/`（Node 版，主用）**：纯 Node 内置模块（http/fs/crypto），**零依赖、无需 npm install**；
+    账本以 JSON 文件存 `data/`，原子写（临时文件 + rename），单线程同步 IO 天然串行，另有跨进程锁文件兜底；
+    直接访问 `/api/setup.php` 得到自检页。部署见 `deploy/Node后端部署指引.md`。
+  - **`server/api/`（PHP 版，备选）**：纯 PHP（≥7.2，无框架），账本存 `api/data/`，原子写 + `flock` 排他锁。
+  - 共同设计：**无数据库**；密码 PBKDF2-SHA256（2 万轮 + 随机盐，只存哈希）；登录令牌是无状态 HMAC-SHA256
+    （默认 90 天，**不落盘**），改密码即轮换签名密钥、旧设备令牌全部失效；连续错密码 8 次锁 10 分钟；
+    `push` 用 `baseRev` 乐观锁检测，冲突返回 409 交给前端让用户决定；自检页会**自动探测账本文件能否被外网直接下载**。
 - 本地开发/测试：
-  - 静态预览：`python -m http.server 8823`；带后端的完整环境：`python tools/run-cloud-tests.py`（会组装站点、起 PHP 内置服务、跑接口测试 + 浏览器端到端测试，跑完自动清理）；
-  - 打包：`python tools/build-deploy.py`（产出 `deploy/ledger-site.zip` 前后端一体包 + `deploy/ledger-cloud-server.zip` 纯后端包，并同步桌面副本）。
+  - 静态预览：`python -m http.server 8823`；
+  - 带后端的完整环境：`python tools/run-cloud-tests.py [--backend=node|php] [--api-only]`
+    —— 组装干净站点、起服务、跑接口断言（63 项）+ 浏览器端到端（53 项），跑完自动清理。
+    Node 后端下由 `tools/dev-gateway.js` 扮演 nginx（静态文件 + `/api` 反代），保证测试跑在与生产相同的路径结构下；
+  - 打包：`python tools/build-deploy.py`（产出 `deploy/ledger-site.zip` 前端包 +
+    `deploy/ledger-api-node.zip` Node 后端包 + `deploy/ledger-cloud-server.zip` PHP 后端包，并同步桌面副本）。
 - 图标由 `tools/make_icons.py` 生成（纯标准库，无 Pillow 依赖）。

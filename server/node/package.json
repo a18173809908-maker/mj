@@ -1,0 +1,13 @@
+{
+  "name": "ledger-cloud-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "往来账 · 云端备份后端（Node 版，零依赖，无需 npm install）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}

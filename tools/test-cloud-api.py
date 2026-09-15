@@ -91,7 +91,9 @@ def main():
     ok('数据目录可写', r.get('writable') is True, r)
     ok('尚未初始化 needsSetup', r.get('needsSetup') is True, r)
     ok('云端还没有账本', r.get('hasLedger') is False, r)
-    ok('PHP >= 7.2', r.get('php') is not None and r['php'].split('.')[0].isdigit(), r.get('php'))
+    ok('运行时标识（node/php）', r.get('runtime') in ('node', 'php'), r.get('runtime'))
+    rtver = r.get('node') or r.get('php')
+    ok('运行时版本可读', bool(rtver) and str(rtver).split('.')[0].lstrip('v').isdigit(), rtver)
     ok('未登录状态 loggedIn=false', r.get('loggedIn') is False, r)
 
     print('\n[2] 初始化密码')

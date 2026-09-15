@@ -41,6 +41,7 @@ try {
         'savedAt' => $cur ? $cur['savedAt'] : null,
         'device' => $cur ? $cur['device'] : '',
         'counts' => $cur ? counts_of($cur['data']) : array('customers' => 0, 'txs' => 0, 'incomes' => 0),
+        'runtime' => 'php',
         'php' => PHP_VERSION,
         'loggedIn' => token_check(bearer())
       ));
