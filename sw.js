@@ -1,10 +1,11 @@
 /* ==========================================================================
    sw.js — 离线缓存（可选增强：https/localhost 下自动生效）
+   策略：页面走「网络优先」（保证更新及时到手机），静态资源走「缓存优先 + 后台更新」
    ========================================================================== */
 (function () {
   'use strict';
 
-  var CACHE = 'ledger-mahjong-v4';
+  var CACHE = 'ledger-mahjong-v5';
   var ASSETS = [
     './',
     './index.html',
@@ -12,12 +13,24 @@
     './css/app.css',
     './js/store.js',
     './js/ui.js',
+    './js/lock.js',
     './js/app.js',
     './assets/icon-192.png',
     './assets/icon-512.png',
     './assets/icon-maskable-512.png',
     './assets/apple-touch-icon.png'
   ];
+
+  function isDocument(req) {
+    return req.mode === 'navigate' ||
+      (req.headers.get('accept') || '').indexOf('text/html') >= 0;
+  }
+
+  function put(req, resp) {
+    if (!resp || !resp.ok) return;
+    var clone = resp.clone();
+    caches.open(CACHE).then(function (c) { c.put(req, clone); });
+  }
 
   self.addEventListener('install', function (e) {
     e.waitUntil(
@@ -36,23 +49,33 @@
   });
 
   self.addEventListener('fetch', function (e) {
-    if (e.request.method !== 'GET') return;
+    var req = e.request;
+    if (req.method !== 'GET') return;
+
+    // 页面：先要网络（拿到最新版），断网再回退缓存
+    if (isDocument(req)) {
+      e.respondWith(
+        fetch(req).then(function (resp) {
+          put(req, resp);
+          return resp;
+        }).catch(function () {
+          return caches.match(req, { ignoreSearch: true }).then(function (hit) {
+            return hit || caches.match('./index.html');
+          });
+        })
+      );
+      return;
+    }
+
+    // 静态资源：先给缓存（快），同时后台拉最新
     e.respondWith(
-      caches.match(e.request, { ignoreSearch: true }).then(function (hit) {
+      caches.match(req, { ignoreSearch: true }).then(function (hit) {
         if (hit) {
-          // 后台静默更新
-          fetch(e.request).then(function (resp) {
-            if (resp && resp.ok) {
-              caches.open(CACHE).then(function (c) { c.put(e.request, resp.clone()); });
-            }
-          }).catch(function () { });
+          fetch(req).then(function (resp) { put(req, resp); }).catch(function () { });
           return hit;
         }
-        return fetch(e.request).then(function (resp) {
-          if (resp && resp.ok) {
-            var clone = resp.clone();
-            caches.open(CACHE).then(function (c) { c.put(e.request, clone); });
-          }
+        return fetch(req).then(function (resp) {
+          put(req, resp);
           return resp;
         });
       })

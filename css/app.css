@@ -575,3 +575,112 @@ textarea.input{ height:auto; padding:12px 14px; min-height:64px; resize:none; li
   body{ background:var(--bg-sunken); }
   .view{ background:var(--bg); box-shadow:0 0 40px rgba(30,36,33,.08); min-height:100vh; }
 }
+
+/* ==========================================================================
+   密码锁（开屏门禁）
+   ========================================================================== */
+
+/* 锁屏时隐藏应用本体，避免下方内容露出 */
+body.locked .view,
+body.locked .tabbar,
+body.locked .fab{ visibility:hidden; }
+
+.lock-screen{
+  position:fixed; inset:0; z-index:200;
+  display:flex; flex-direction:column; align-items:center;
+  padding:calc(var(--safe-t) + 44px) 26px calc(var(--safe-b) + 22px);
+  background:radial-gradient(125% 80% at 50% 0%, #1A6650 0%, #0F4C3A 46%, #093024 100%);
+  color:#EDF5F1;
+  overflow-y:auto;
+  animation:lockIn .22s ease both;
+}
+@keyframes lockIn{ from{ opacity:0; } to{ opacity:1; } }
+.lock-screen.unlock-away{ animation:lockAway .26s ease both; }
+@keyframes lockAway{ from{ opacity:1; } to{ opacity:0; transform:scale(1.02); } }
+
+.lock-head{ display:flex; flex-direction:column; align-items:center; text-align:center; }
+.lock-icon{
+  width:66px; height:66px; border-radius:19px; display:block;
+  box-shadow:0 10px 26px rgba(0,0,0,.3);
+}
+.lock-title{ font-size:19px; font-weight:600; letter-spacing:.6px; margin-top:15px; }
+.lock-sub{ font-size:13px; color:rgba(237,245,241,.6); margin-top:7px; line-height:1.5; }
+
+.lock-body{
+  width:100%; max-width:300px; margin-top:auto;
+  display:flex; flex-direction:column; align-items:center;
+  padding-top:28px;
+}
+
+.lock-dots{ display:flex; gap:16px; margin:6px 0 4px; }
+.lock-dots i{
+  width:13px; height:13px; border-radius:50%;
+  border:1.6px solid rgba(237,245,241,.45); box-sizing:border-box;
+  transition:background .12s ease, border-color .12s ease, transform .12s ease;
+}
+.lock-dots i.on{ background:#EDF5F1; border-color:#EDF5F1; transform:scale(1.06); }
+.lock-dots.shake{ animation:lockShake .38s ease; }
+@keyframes lockShake{
+  0%,100%{ transform:translateX(0); }
+  20%{ transform:translateX(-8px); } 40%{ transform:translateX(7px); }
+  60%{ transform:translateX(-5px); } 80%{ transform:translateX(3px); }
+}
+
+.lock-err{
+  min-height:20px; font-size:12.5px; line-height:1.5;
+  color:#FFCBC4; text-align:center; margin:8px 0 2px;
+}
+
+.lock-remember{
+  display:flex; align-items:center; justify-content:center; gap:7px;
+  min-height:22px; font-size:12.5px; color:rgba(237,245,241,.72);
+  margin:6px 0 14px;
+}
+.lock-remember input{ width:15px; height:15px; accent-color:#EDF5F1; }
+
+.keypad{
+  display:grid; grid-template-columns:repeat(3,1fr); gap:11px;
+  width:100%; margin-top:2px;
+}
+.keypad button{
+  height:54px; border-radius:16px; cursor:pointer;
+  border:1px solid rgba(237,245,241,.17);
+  background:rgba(255,255,255,.075);
+  color:#EDF5F1; font-size:22px; font-weight:500;
+  font-family:inherit;
+  transition:background .12s ease;
+  -webkit-tap-highlight-color:transparent;
+}
+.keypad button:active{ background:rgba(255,255,255,.2); }
+.keypad button.ghost{ background:transparent; border-color:transparent; font-size:14px; color:rgba(237,245,241,.7); }
+
+.lock-ok{
+  width:100%; height:50px; margin-top:13px; border:0; border-radius:16px; cursor:pointer;
+  background:#EDF5F1; color:#0F4C3A; font-size:16px; font-weight:600; font-family:inherit;
+  transition:opacity .15s ease;
+}
+.lock-ok:disabled{ opacity:.32; }
+.lock-ok.danger{ background:#E4574A; color:#fff; }
+.lock-ok.on{ opacity:1; }
+
+.lock-forgot{
+  margin-top:14px; background:none; border:0; cursor:pointer;
+  color:rgba(237,245,241,.62); font-size:12.5px; font-family:inherit;
+  text-decoration:underline; text-underline-offset:3px;
+  padding:6px 10px;
+}
+
+.lock-note{
+  font-size:13px; line-height:1.75; text-align:center;
+  color:rgba(237,245,241,.8); margin:0 0 20px;
+}
+
+.lock-input{
+  width:100%; height:50px; border-radius:14px; box-sizing:border-box;
+  border:1px solid rgba(237,245,241,.25);
+  background:rgba(255,255,255,.1); color:#EDF5F1;
+  font-size:15px; font-family:inherit; padding:0 14px; text-align:center;
+  outline:none;
+}
+.lock-input::placeholder{ color:rgba(237,245,241,.42); }
+.lock-input:focus{ border-color:rgba(237,245,241,.55); background:rgba(255,255,255,.14); }

@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '1.2.0';
+  var VERSION = '1.3.0';
 
   var state = {
     route: 'home',
@@ -973,9 +973,22 @@
 
   function renderMe() {
     var cigN = Store.listCigs().length;
+    var locked = global.Lock && Lock.isSet();
 
     var html =
       pageTitle('我的', null) +
+
+      '<div class="section"><div class="section-head"><h2>安全</h2></div><div class="card">' +
+      (locked
+        ? '  <button class="list-item" id="changePin" type="button"><span class="li-ico">' + icon('lock', 21) + '</span>' +
+          '    <span class="li-txt">修改密码<span class="li-desc">已开启密码锁，打开应用需输数字密码</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
+          '  <button class="list-item" id="lockNow" type="button"><span class="li-ico">' + icon('moon', 21) + '</span>' +
+          '    <span class="li-txt">立即锁定<span class="li-desc">锁屏，下次打开要重新输密码</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
+          '  <button class="list-item" id="offPin" type="button"><span class="li-ico">' + icon('unlock', 21) + '</span>' +
+          '    <span class="li-txt">关闭密码锁</span></button>'
+        : '  <button class="list-item" id="setPin" type="button"><span class="li-ico">' + icon('lock', 21) + '</span>' +
+          '    <span class="li-txt">开启密码锁<span class="li-desc">设 4-6 位数字密码，别人拿到网址也看不了账</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>') +
+      '</div></div>' +
 
       '<div class="section"><div class="section-head"><h2>快捷设置</h2></div><div class="card">' +
       '  <button class="list-item" id="manageCigs" type="button"><span class="li-ico">' + icon('cig', 21) + '</span>' +
@@ -1007,6 +1020,29 @@
       '</div></div>';
 
     view.innerHTML = html;
+
+    /* --- 密码锁 --- */
+    var setPinBtn = $('#setPin');
+    if (setPinBtn) setPinBtn.addEventListener('click', function () {
+      Lock.openSetup({ mode: 'set', onDone: function (msg) { toast(msg, 'ok'); render(); } });
+    });
+    var changePinBtn = $('#changePin');
+    if (changePinBtn) changePinBtn.addEventListener('click', function () {
+      Lock.openSetup({ mode: 'change', onDone: function (msg) { toast(msg, 'ok'); render(); } });
+    });
+    var lockNowBtn = $('#lockNow');
+    if (lockNowBtn) lockNowBtn.addEventListener('click', function () {
+      Lock.lockNow();
+      document.body.classList.add('locked');
+      Lock.showLockScreen(function () {});
+    });
+    var offPinBtn = $('#offPin');
+    if (offPinBtn) offPinBtn.addEventListener('click', function () {
+      Lock.openSetup({
+        mode: 'off',
+        onDone: function (msg) { toast(msg, 'ok'); render(); }
+      });
+    });
 
     $('#manageCigs').addEventListener('click', openCigsSheet);
     $('#expJson').addEventListener('click', function () {
@@ -1480,12 +1516,22 @@
 
   /* ================= 启动 ================= */
 
-  Store.load();
-  render();
+  function bootApp() {
+    Store.load();
+    render();
 
-  // PWA：https / localhost 下注册离线缓存
-  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-    navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('SW 注册失败（不影响使用）', e); });
+    // PWA：https / localhost 下注册离线缓存
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+      navigator.serviceWorker.register('sw.js').catch(function (e) { console.warn('SW 注册失败（不影响使用）', e); });
+    }
+  }
+
+  if (global.Lock && Lock.isSet() && !Lock.isUnlocked()) {
+    // 设了密码锁且本机未记住：先上锁，解锁后再启动
+    document.body.classList.add('locked');
+    Lock.showLockScreen(bootApp);
+  } else {
+    bootApp();
   }
 
 })(window);
