@@ -111,9 +111,9 @@
       return !!(m && m.hash && m.salt);
     },
 
-    /** 当前是否已解锁 */
+    /** 当前是否已解锁（可直接进入系统） */
     isUnlocked: function () {
-      if (!Lock.isSet()) return true;   // 没设密码 = 不拦
+      if (!Lock.isSet()) return false;  // 还没设密码：必须先设置才能进（强制门禁）
       if (sessionUnlocked) return true;
       var u = readJSON(UNLOCK_KEY);
       if (u && u.exp && u.exp > Date.now()) return true;
@@ -216,9 +216,10 @@
       body =
         '<input class="lock-input" id="lockHint" maxlength="30" placeholder="比如：店里常用的那串" value="' + (state.hint || '') + '">' +
         '<button class="lock-ok on" id="lockHintOk" type="button">' + (state.hintOkText || '保存') + '</button>' +
-        '<button class="lock-forgot" id="lockHintSkip" type="button">跳过，不设提示</button>';
+        '<button class="lock-forgot" id="lockHintSkip" type="button">不设提示，直接进入</button>';
     } else {
       body =
+        (state.note ? '<p class="lock-note">' + state.note + '</p>' : '') +
         '<div class="lock-dots' + (state.shake ? ' shake' : '') + '">' + dotsHtml(state.pinLen || 6, state.buf.length) + '</div>' +
         '<div class="lock-err">' + err + '</div>' +
         (state.showRemember
@@ -336,8 +337,8 @@
   function showLockScreen(onOk) {
     document.body.classList.add('locked');
     var state = {
-      buf: '', err: '', title: '往来账', sub: '',
-      pinLen: 6, autoSubmit: true, showRemember: true, remember: true,
+      buf: '', err: '', title: '往来账', sub: '输入密码后才能进入',
+      pinLen: 6, autoSubmit: true, showRemember: true, remember: false,
       forgot: true, okText: '进入', busy: false
     };
 
@@ -374,11 +375,15 @@
   /**
    * 设置 / 修改 / 关闭密码锁
    * opts.mode: 'set' | 'change' | 'off'
+   * opts.gate: true 表示首次使用的强制门禁（没有退出，不设完进不去）
+   * opts.warnData: true 表示本机已有账目，引导页加一句提醒
    * opts.onDone(): 成功回调
    */
   function openSetup(opts) {
     opts = opts || {};
     var mode = opts.mode || 'set';
+    var gate = !!opts.gate;
+    var warnData = !!opts.warnData;
     var onDone = opts.onDone || function () {};
     document.body.classList.add('locked');
 
@@ -407,15 +412,21 @@
     askNew();
 
     function askNew() {
-      st.title = mode === 'set' ? '设置密码锁' : '修改密码';
-      st.sub = '设置 4-6 位数字密码'; st.okText = '下一步';
+      st.title = gate ? '设置进入密码' : (mode === 'set' ? '设置密码锁' : '修改密码');
+      st.sub = gate ? '必须输密码才能打开，先设一个' : '设置 4-6 位数字密码';
+      st.okText = '下一步';
+      st.note = gate
+        ? (warnData
+          ? '这台设备上已经有账目数据。密码只存在本机、无法找回，忘了就只能清空数据重来——请设一个记得住的。'
+          : '4-6 位数字。密码只存在这台设备上，忘了就只能清空数据重来。')
+        : '';
       st.autoSubmit = false; st.buf = ''; st.err = ''; st.step = 'new';
       st.onSubmit = function (pin) { st.first = pin; askConfirm(); };
       paint(st);
     }
 
     function askConfirm() {
-      st.title = '再输一次'; st.sub = '确认刚才的密码';
+      st.title = '再输一次'; st.sub = '确认刚才的密码'; st.note = '';
       st.buf = ''; st.err = ''; st.step = 'confirm';
       st.onSubmit = function (pin) {
         if (pin !== st.first) {
@@ -431,11 +442,11 @@
 
     function askHint() {
       st.title = '密码提示'; st.sub = '选填，连续输错 3 次会显示出来';
-      st.buf = ''; st.err = ''; st.inputMode = true; st.hint = (readJSON(KEY) || {}).hint || '';
-      st.hintOkText = '保存并启用';
+      st.buf = ''; st.err = ''; st.note = ''; st.inputMode = true; st.hint = (readJSON(KEY) || {}).hint || '';
+      st.hintOkText = gate ? '保存并进入' : '保存并启用';
       st.onHint = function (hint) {
         Lock.setPin(st.first, hint);
-        done(mode === 'set' ? '密码锁已开启' : '密码已修改');
+        done(mode === 'set' ? (gate ? '密码已设置，以后打开要输它' : '密码锁已开启') : '密码已修改');
       };
       paint(st);
     }

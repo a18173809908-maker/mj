@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '1.7.0';
+  var VERSION = '1.8.0';
 
   var state = {
     route: 'home',
@@ -1386,21 +1386,15 @@
 
   function renderMe() {
     var cigN = Store.listCigs().length;
-    var locked = global.Lock && Lock.isSet();
 
     var html =
       pageTitle('我的', null) +
 
       '<div class="section"><div class="section-head"><h2>安全</h2></div><div class="card">' +
-      (locked
-        ? '  <button class="list-item" id="changePin" type="button"><span class="li-ico">' + icon('lock', 21) + '</span>' +
-          '    <span class="li-txt">修改密码<span class="li-desc">已开启密码锁，打开应用需输数字密码</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
-          '  <button class="list-item" id="lockNow" type="button"><span class="li-ico">' + icon('moon', 21) + '</span>' +
-          '    <span class="li-txt">立即锁定<span class="li-desc">锁屏，下次打开要重新输密码</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
-          '  <button class="list-item" id="offPin" type="button"><span class="li-ico">' + icon('unlock', 21) + '</span>' +
-          '    <span class="li-txt">关闭密码锁</span></button>'
-        : '  <button class="list-item" id="setPin" type="button"><span class="li-ico">' + icon('lock', 21) + '</span>' +
-          '    <span class="li-txt">开启密码锁<span class="li-desc">设 4-6 位数字密码，别人拿到网址也看不了账</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>') +
+      '  <button class="list-item" id="changePin" type="button"><span class="li-ico">' + icon('lock', 21) + '</span>' +
+      '    <span class="li-txt">修改密码<span class="li-desc">已强制开启，打开应用必须输密码</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
+      '  <button class="list-item" id="lockNow" type="button"><span class="li-ico">' + icon('moon', 21) + '</span>' +
+      '    <span class="li-txt">立即锁定<span class="li-desc">马上锁屏，再打开就要重新输密码</span></span><span class="li-arrow">' + icon('chev', 18) + '</span></button>' +
       '</div></div>' +
 
       '<div class="section"><div class="section-head"><h2>快捷设置</h2></div><div class="card">' +
@@ -1436,11 +1430,7 @@
 
     view.innerHTML = html;
 
-    /* --- 密码锁 --- */
-    var setPinBtn = $('#setPin');
-    if (setPinBtn) setPinBtn.addEventListener('click', function () {
-      Lock.openSetup({ mode: 'set', onDone: function (msg) { toast(msg, 'ok'); render(); } });
-    });
+    /* --- 密码锁（强制开启，不提供关闭入口） --- */
     var changePinBtn = $('#changePin');
     if (changePinBtn) changePinBtn.addEventListener('click', function () {
       Lock.openSetup({ mode: 'change', onDone: function (msg) { toast(msg, 'ok'); render(); } });
@@ -1450,13 +1440,6 @@
       Lock.lockNow();
       document.body.classList.add('locked');
       Lock.showLockScreen(function () {});
-    });
-    var offPinBtn = $('#offPin');
-    if (offPinBtn) offPinBtn.addEventListener('click', function () {
-      Lock.openSetup({
-        mode: 'off',
-        onDone: function (msg) { toast(msg, 'ok'); render(); }
-      });
     });
 
     $('#manageCigs').addEventListener('click', openCigsSheet);
@@ -1976,8 +1959,25 @@
     }
   }
 
-  if (global.Lock && Lock.isSet() && !Lock.isUnlocked()) {
-    // 设了密码锁且本机未记住：先上锁，解锁后再启动
+  /* 本机是否已经有账目数据（用于首次设密码时提醒） */
+  function hasLocalData() {
+    try {
+      var raw = localStorage.getItem('ledger_mahjong_v1');
+      if (!raw) return false;
+      var d = JSON.parse(raw);
+      return !!((d.customers && d.customers.length) || (d.txs && d.txs.length) || (d.incomes && d.incomes.length));
+    } catch (e) { return false; }
+  }
+
+  /* 门禁：没设过密码 → 先设；设了但本机没过 → 解锁。两关都过才进系统。 */
+  if (global.Lock && !Lock.isSet()) {
+    document.body.classList.add('locked');
+    Lock.openSetup({
+      mode: 'set', gate: true, warnData: hasLocalData(),
+      onDone: function () { bootApp(); }
+    });
+  } else if (global.Lock && !Lock.isUnlocked()) {
+    // 已设密码但本机未授权：先上锁，解锁后再启动
     document.body.classList.add('locked');
     Lock.showLockScreen(bootApp);
   } else {
