@@ -16,7 +16,8 @@
          openAt, closeAt, tableNo, note, createdAt }
          status: 'open' 开台中（人还在打） | 'closed' 已收台
          feeMode: 'separate' 台费单独收 | 'netting' 台费从借款里扣（借 500 扣 20 实拿 480）
-         players = 上桌人数；amount = 本场台费总额（默认 人数×每人，可手改）
+         players = 上桌人数，只认 3 或 4（一场牌就这两种，没有别的选项）；
+        amount = 本场台费总额（默认按上桌的人各自台费相加，可手改）
        场里发生的借款/还款/挂账台费/代买烟，真相只有一份——全在流水 tx 里，
        用 incomeId 指回这场牌；不在场次上另存，从根上避免两边对不上。
        口径：amount = 本场台费收入（营业额，含赊账）；
@@ -57,8 +58,13 @@
     return Math.round((n + Number.EPSILON) * 100) / 100;
   }
 
-  /** 'YYYY-MM-DD' → '今天 · 周二' 之类的友好展示 */
-  function humanDate(s) {
+/** 上桌人数只认 3 / 4：3 人以下按 3 人，4 人以上按 4 人 */
+function fixHead(n) {
+  return (Number(n) || 4) > 3 ? 4 : 3;
+}
+
+/** 'YYYY-MM-DD' → '今天 · 周二' 之类的友好展示 */
+function humanDate(s) {
     var d = parseDate(s);
     var w = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getDay()];
     var today = toDateStr(new Date());
@@ -368,18 +374,25 @@
     /** 这场牌每位玩家的借贷小计（谁借了多少、还了多少、这场给他留下多少欠款） */
     sessionPlayers: function (sessionId) {
       var self = this, m = {}, order = [];
+      var s = this.getIncome(sessionId);
+      var feeMap = (s && s.feeMap) || {};
+
+      function ensure(cid) {
+        if (m[cid]) return m[cid];
+        var c = self.getCustomer(cid);
+        m[cid] = {
+          customerId: cid, name: c ? c.name : '（已删除）',
+          phone: c ? (c.phone || '') : '',
+          loanOut: 0, loanBack: 0, credit: 0, cig: 0
+        };
+        order.push(cid);
+        return m[cid];
+      }
+
       this.data.txs.forEach(function (t) {
         if (t.incomeId !== sessionId) return;
-        if (!m[t.customerId]) {
-          var c = self.getCustomer(t.customerId);
-          m[t.customerId] = {
-            customerId: t.customerId, name: c ? c.name : '（已删除）',
-            phone: c ? (c.phone || '') : '',
-            loanOut: 0, loanBack: 0, credit: 0, cig: 0
-          };
-          order.push(t.customerId);
-        }
-        var r = m[t.customerId], cat = normCategory(t.category), amt = Number(t.amount || 0);
+        var r = ensure(t.customerId);
+        var cat = normCategory(t.category), amt = Number(t.amount || 0);
         if (t.type === 'paid') {
           r.loanBack += amt;                 // 还借款 / 还挂账，都算他还进来的钱
         } else if (cat === 'loan') {
@@ -389,16 +402,45 @@
           if (cat === 'cig') r.cig += amt;
         }
       });
+
+      // 只上桌、既没借钱也没挂账的人，也要出现在名单里
+      Object.keys(feeMap).forEach(function (cid) { ensure(cid); });
+
       return order.map(function (k) {
         var r = m[k];
         r.loanOut = round2(r.loanOut); r.loanBack = round2(r.loanBack);
         r.credit = round2(r.credit); r.cig = round2(r.cig);
+        // 每人台费：开台时单独设过就用自己的，没设过就回退到整场的每人单价
+        r.fee = feeMap[k] !== undefined ? round2(feeMap[k]) : round2(s ? s.unitPrice : 0);
         r.net = round2(r.loanOut + r.credit - r.loanBack);
         return r;
       }).sort(function (a, b) {
         if (b.net !== a.net) return b.net - a.net;
         return a.name.localeCompare(b.name, 'zh');
       });
+    },
+
+    /**
+     * 最近上过桌的客人（按场次开台时间倒序去重），开台时用来一键加人。
+     * 只认还存在于客户名单里的客户。
+     */
+    recentPlayers: function (limit) {
+      limit = limit || 8;
+      var self = this, seen = {}, out = [];
+      this.data.incomes.slice().sort(function (a, b) {
+        return (b.openAt || b.createdAt || 0) - (a.openAt || a.createdAt || 0);
+      }).forEach(function (s) {
+        if (out.length >= limit) return;
+        self.data.txs.forEach(function (t) {
+          if (out.length >= limit) return;
+          if (t.incomeId !== s.id || seen[t.customerId]) return;
+          var c = self.getCustomer(t.customerId);
+          if (!c) return;
+          seen[t.customerId] = 1;
+          out.push(c);
+        });
+      });
+      return out;
     },
 
     /** 这场牌的钱账汇总 */
@@ -456,7 +498,7 @@
     openSession: function (info) {
       var now = Date.now();
       var members = (info.members || []).filter(function (m) { return m && m.customerId; });
-      var headcount = Math.max(1, Number(info.players) || members.length || 1);
+      var headcount = fixHead(Number(info.players) || members.length || 4);
       var unitPrice = round2(info.unitPrice || 0);
       var amount = round2(info.amount);
       if (!(amount > 0)) amount = round2(headcount * unitPrice);
@@ -473,12 +515,16 @@
         closeAt: null,
         tableNo: String(info.tableNo || '').trim(),
         note: String(info.note || '').trim(),
+        feeMap: {},                  // { customerId: 这位的台费 } —— 每人台费可以不一样
         createdAt: now
       };
       this.data.incomes.push(s);
 
       var self = this, seq = 0;
       members.forEach(function (m) {
+        if (m.fee !== undefined && m.fee !== null && m.fee !== '') {
+          s.feeMap[m.customerId] = round2(m.fee);
+        }
         var stake = round2(m.stake);
         if (stake > 0) {
           self.data.txs.push({
@@ -641,7 +687,7 @@
       var it = {
         id: uid('i'),
         date: info.date || toDateStr(new Date()),
-        players: Math.max(1, Number(info.players) || 1),
+        players: fixHead(Number(info.players) || 4),
         unitPrice: round2(info.unitPrice || 0),
         amount: amount,
         feeMode: info.feeMode === 'netting' ? 'netting' : 'separate',
@@ -1152,7 +1198,8 @@
   /* 工具方法挂到 Store 上，供 UI 复用 */
   Store.util = {
     uid: uid, toDateStr: toDateStr, parseDate: parseDate, humanDate: humanDate, hmTime: hmTime,
-    money: money, round2: round2, normCategory: normCategory, CATEGORY_LABEL: CATEGORY_LABEL
+    money: money, round2: round2, normCategory: normCategory, CATEGORY_LABEL: CATEGORY_LABEL,
+    fixHead: fixHead
   };
 
   global.Store = Store;

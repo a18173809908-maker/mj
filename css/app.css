@@ -417,6 +417,9 @@ textarea.input{ height:auto; padding:12px 14px; min-height:64px; resize:none; li
 .chip:active{ background:var(--brand-soft); border-color:var(--brand); color:var(--brand); }
 .chip.on{ background:var(--brand-soft); border-color:var(--brand); color:var(--brand); }
 
+/* 上桌人数：只有 3 人 / 4 人两个选项，做成等宽大按钮 */
+.chip-head{ flex:1 1 0; min-width:0; padding:11px 8px; text-align:center; font-size:15.5px; }
+
 /* 客户选择网格 */
 .picker{ display:grid; grid-template-columns:repeat(2,1fr); gap:9px; margin-bottom:12px; }
 .pick{
@@ -719,6 +722,22 @@ body.locked .fab{ visibility:hidden; }
 }
 .gx:active{ background:var(--bg-sunken); }
 
+/* 上桌的人：一人一行，台费和借款分开设 */
+.grow3{
+  display:grid; grid-template-columns:1fr 76px 76px 28px; gap:7px; align-items:center;
+  padding:8px 10px; border-radius:12px; background:var(--bg-sunken);
+}
+.grow3.ghead{ background:transparent; padding:0 10px 2px; }
+.grow3.ghead span{ font-size:11.5px; color:var(--ink-3); font-weight:600; }
+.grow3 .grow-name{ font-size:14.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gcell{
+  display:flex; align-items:center; height:36px; padding:0 7px;
+  border:1.5px solid var(--line); border-radius:9px; background:var(--bg-elev);
+}
+.gcell::before{ content:'¥'; font-size:11.5px; color:var(--ink-3); font-weight:600; margin-right:2px; }
+.gcell .gin{ width:100%; min-width:0; font-size:14.5px; color:var(--ink); padding:2px 0; }
+.gcell.loan .gin{ color:var(--red); }
+
 /* 客户选择面板 */
 .pickwrap{
   margin-top:10px; padding:12px;
@@ -773,6 +792,63 @@ body.locked .fab{ visibility:hidden; }
 }
 .mini.ghost{ border-color:var(--line); background:var(--bg-elev); color:var(--ink-2); }
 .mini:active{ filter:brightness(.96); }
+
+/* ---------- v1.6 开台抽屉：瘦身 ---------- */
+
+/* 字段与数值同行 */
+.fld-row{ display:flex; align-items:center; gap:10px; margin-bottom:9px; }
+.fld-row > label{ flex:1; margin:0; }
+.fld-in{ width:80px; flex:0 0 80px; text-align:center; padding:9px 8px; }
+
+/* 台费合计：小号金额输入 */
+.money-mini{
+  display:flex; align-items:center; gap:5px; flex:0 0 120px;
+  border:1.5px solid var(--line); border-radius:11px; background:var(--bg);
+  padding:0 11px; height:42px;
+}
+.money-mini:focus-within{ border-color:var(--brand); background:var(--bg-elev); }
+.money-mini .cur{ font-size:15px; font-weight:600; color:var(--ink-3); }
+.money-mini input{
+  width:100%; min-width:0; border:0; outline:0; background:transparent;
+  font-size:17px; font-weight:700; color:var(--ink);
+  text-align:right; font-variant-numeric:tabular-nums;
+}
+
+/* 最近上桌的常客 */
+.recent-wrap{ margin-top:11px; }
+.recent-label{ display:block; font-size:12px; color:var(--ink-3); margin-bottom:6px; }
+.recent{ display:flex; flex-wrap:wrap; gap:7px; }
+.rchip{
+  padding:7px 14px; border-radius:999px; border:1.5px solid var(--line);
+  background:var(--bg-elev); color:var(--ink); font-size:13.5px; font-weight:600; cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+}
+.rchip:active{ background:var(--brand-soft); border-color:var(--brand); color:var(--brand); }
+
+.pick-new .pn{ color:var(--brand); }
+
+/* 更多选项折叠 */
+.adv-head{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  width:100%; padding:12px 14px; margin:4px 0 16px;
+  border:1.5px dashed var(--line); border-radius:13px; background:transparent;
+  color:var(--ink-2); font-size:13.5px; font-weight:600; cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+}
+.adv-head svg{ flex:0 0 auto; transition:transform .2s; }
+.adv-head.on{ border-color:var(--brand); color:var(--brand); }
+.adv-head.on svg{ transform:rotate(90deg); }
+.adv-body{ padding-top:2px; }
+
+/* 正在打的台：整行可点 + 右侧收台 */
+.tx-openrow{ padding:0; gap:0; }
+.tx-openrow .tx-hit{
+  flex:1; min-width:0; display:flex; align-items:center; gap:12px;
+  padding:12px 8px 12px 16px; background:transparent; border:0;
+  text-align:left; cursor:pointer; -webkit-tap-highlight-color:transparent;
+}
+.tx-openrow .tx-hit:active{ background:var(--bg-sunken); }
+.tx-quickclose{ flex:0 0 auto; margin-right:14px; }
 
 /* 本场动态 */
 .tline{ display:flex; flex-direction:column; }

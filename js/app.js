@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '1.5.0';
+  var VERSION = '1.7.0';
 
   var state = {
     route: 'home',
@@ -396,9 +396,12 @@
   /* ================= 页面：牌局（开台 / 借还 / 收台） ================= */
 
   var DEF_STAKE = 500;                       // 开台默认借款
-  var HEAD_CHIPS = [1, 2, 3, 4, 5, 6];
+  var HEAD_CHIPS = [3, 4];                   // 一场牌只有 3 人或 4 人，没有别的选项
   var FEE_CHIPS = [10, 20, 30, 50];
   var LOAN_CHIPS = [100, 200, 300, 500, 1000];
+
+  /** 上桌人数只认 3 / 4：3 人以下按 3，4 人以上按 4 */
+  function fixHead(n) { return (Number(n) || 4) > 3 ? 4 : 3; }
 
   /** 时长描述 */
   function durText(ms) {
@@ -488,17 +491,24 @@
     view.querySelectorAll('[data-table]').forEach(function (b) {
       b.addEventListener('click', function () { openSessionSheet(b.getAttribute('data-table')); });
     });
+    // 正在打的台：行内直接收台，不用先进台面
+    view.querySelectorAll('[data-closetbl]').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openCloseSheet(b.getAttribute('data-closetbl'));
+      });
+    });
   }
 
   /** 正在打的台：一行 */
   function openTableRowHtml(s) {
     var ss = Store.sessionSummary(s);
-    var ps = Store.sessionPlayers(s.id);
     var bits = [];
     bits.push('开台 ' + (hmTime(s.openAt) || '--:--') + ' · 打了 ' + durText(Date.now() - (s.openAt || s.createdAt || Date.now())));
     if (s.players) bits.push(s.players + ' 人');
     if (ss.loanOut > 0) bits.push('借出 ¥' + money(ss.loanOut) + (ss.loanBack > 0 ? ' · 已还 ¥' + money(ss.loanBack) : ''));
-    return '<button class="tx" data-table="' + s.id + '" type="button">' +
+    return '<div class="tx tx-openrow">' +
+      '<button class="tx-hit" data-table="' + s.id + '" type="button">' +
       '<span class="tx-badge live">台</span>' +
       '<span class="tx-main">' +
       '<span class="tx-title">' + esc(tableName(s)) + ' · 台费 ¥' + esc(money(ss.fee)) + '</span>' +
@@ -508,7 +518,9 @@
       '<span class="tx-amt num owe">¥' + esc(money(ss.netLoan)) + '</span>' +
       '<span class="tx-time">牌面</span>' +
       '</span>' +
-      '</button>';
+      '</button>' +
+      '<button class="mini tx-quickclose" data-closetbl="' + s.id + '" type="button">收台</button>' +
+      '</div>';
   }
 
   /** 已收工的台：一行 */
@@ -544,15 +556,16 @@
     var draft = {
       tableNo: editing ? (editing.tableNo || '') : '',
       date: editing ? editing.date : today(new Date()),
-      players: editing ? (Number(editing.players) || 4) : 4,
+      players: editing ? fixHead(editing.players) : 4,
+      playersTouched: !!editing,          // 人数被手动改过 → 不再跟着上桌的人走
       unitPrice: editing ? (Number(editing.unitPrice) || 20) : 20,
       amount: editing ? Number(editing.amount) || 0 : 0,
       amountTouched: !!editing,
       feeMode: editing ? (editing.feeMode || 'separate') : 'separate',
       note: editing ? (editing.note || '') : '',
       guests: [],
-      picking: false,
-      pickKw: ''
+      kw: '',
+      adv: false                          // 「更多选项」是否展开
     };
     if (!editing) draft.amount = R2(draft.players * draft.unitPrice);
 
@@ -565,99 +578,157 @@
       '</div>'
     );
 
-    function guestsHtml() {
-      if (!draft.guests.length) {
-        return '<p class="hint" style="padding:2px 0 8px">还没加人。加了谁，就按「谁借记谁」给他记开台借款。</p>';
-      }
-      return '<div class="glist">' + draft.guests.map(function (g) {
-        return '<div class="grow">' +
-          '<span class="grow-name">' + esc(g.name) + '</span>' +
-          '<span class="grow-stake"><span class="cur">¥</span>' +
-          '<input class="gin num" type="text" inputmode="decimal" data-stake="' + g.customerId + '" value="' + (g.stake ? String(g.stake) : '') + '" placeholder="0"></span>' +
-          '<button class="gx" type="button" data-delguest="' + g.customerId + '" aria-label="移除">' + icon('close', 15) + '</button>' +
-          '</div>';
-      }).join('') + '</div>';
+    /* ---------- 上桌的人：搜索 + 最近上桌 + 已加列表 ---------- */
+
+    function haveIds() {
+      var o = {};
+      draft.guests.forEach(function (g) { o[g.customerId] = 1; });
+      return o;
     }
 
-    function pickHtml() {
-      if (!draft.picking) return '';
-      var have = {};
-      draft.guests.forEach(function (g) { have[g.customerId] = 1; });
-      var kw = draft.pickKw.toLowerCase();
+    function guestsHtml() {
+      if (!draft.guests.length) {
+        return '<p class="hint" style="padding:2px 0 4px">还没加人。加了谁，就能单独给他设台费和开台借款。</p>';
+      }
+      return '<div class="glist">' +
+        '<div class="grow3 ghead"><span>姓名</span><span>台费</span><span>借款</span><span></span></div>' +
+        draft.guests.map(function (g) {
+          return '<div class="grow3">' +
+            '<span class="grow-name">' + esc(g.name) + '</span>' +
+            '<span class="gcell"><input class="gin num" type="text" inputmode="decimal" data-gfee="' + g.customerId + '" value="' + String(g.fee === undefined || g.fee === null ? '' : g.fee) + '" placeholder="0"></span>' +
+            '<span class="gcell loan"><input class="gin num" type="text" inputmode="decimal" data-stake="' + g.customerId + '" value="' + (g.stake ? String(g.stake) : '') + '" placeholder="0"></span>' +
+            '<button class="gx" type="button" data-delguest="' + g.customerId + '" aria-label="移除">' + icon('close', 15) + '</button>' +
+            '</div>';
+        }).join('') + '</div>';
+    }
+
+    /** 最近上过桌的常客，一点即加 */
+    function recentHtml() {
+      var have = haveIds();
+      var list = Store.recentPlayers(8).filter(function (c) { return !have[c.id]; });
+      if (!list.length) return '';
+      return '<div class="recent-wrap"><span class="recent-label">最近上桌</span>' +
+        '<div class="recent">' + list.map(function (c) {
+          return '<button class="rchip" type="button" data-addcust="' + c.id + '">' + esc(c.name) + '</button>';
+        }).join('') + '</div></div>';
+    }
+
+    /** 搜索候选：打字即时出，点一下即加，不用再点「好了」 */
+    function candHtml() {
+      if (!draft.kw) return '';
+      var have = haveIds();
+      var kw = draft.kw.toLowerCase();
       var list = Store.listCustomers().filter(function (c) {
         if (have[c.id]) return false;
-        if (kw && c.name.toLowerCase().indexOf(kw) < 0) return false;
-        return true;
-      });
-      return '<div class="pickwrap">' +
-        '<input class="input" id="pickKw" type="text" placeholder="搜客户名字" value="' + esc(draft.pickKw) + '">' +
-        '<div class="picker">' +
-        (list.length
-          ? list.map(function (c) {
-            var bal = Store.balanceOf(c.id);
-            return '<button class="pick" type="button" data-pickcust="' + c.id + '">' +
-              '<span class="pn">' + esc(c.name) + '</span>' +
-              '<span class="pv">' + (bal > 0.004 ? '已欠 ¥' + esc(money(bal)) : '账已清') + '</span>' +
-              '</button>';
-          }).join('')
-          : '<p class="hint" style="padding:10px 2px;grid-column:1/-1">没有别的客户了，直接输个名字新建。</p>') +
-        '</div>' +
-        '<div class="btn-row" style="margin-top:10px">' +
-        '<input class="input" id="newCustName" type="text" maxlength="20" placeholder="新客户名字">' +
-        '<button class="btn btn-ghost" id="addNewCust" type="button" style="flex:0 0 auto;padding:0 16px">加进去</button>' +
-        '</div>' +
-        '<button class="btn btn-ghost" id="pickDone" type="button" style="margin-top:10px">好了</button>' +
+        return c.name.toLowerCase().indexOf(kw) >= 0;
+      }).slice(0, 6);
+      var rows = list.map(function (c) {
+        var bal = Store.balanceOf(c.id);
+        return '<button class="pick" type="button" data-addcust="' + c.id + '">' +
+          '<span class="pn">' + esc(c.name) + '</span>' +
+          '<span class="pv">' + (bal > 0.004 ? '已欠 ¥' + esc(money(bal)) : '账已清') + '</span>' +
+          '</button>';
+      }).join('');
+      if (!Store.findCustomerByName(draft.kw)) {
+        rows += '<button class="pick pick-new" type="button" data-newcust="1">' +
+          '<span class="pn">＋ 新建「' + esc(draft.kw) + '」</span>' +
+          '<span class="pv">顺便加进这一台</span></button>';
+      }
+      return '<div class="picker" style="margin:9px 0 0">' + rows + '</div>';
+    }
+
+    function advBlock() {
+      return '<button class="adv-head' + (draft.adv ? ' on' : '') + '" id="advToggle" type="button">' +
+        '<span>更多选项：台号 / 日期 / 备注 / 台费怎么收</span>' + icon('chev', 16) + '</button>' +
+        '<div class="adv-body" id="advBody"' + (draft.adv ? '' : ' hidden') + '>' +
+        '  <div class="field"><label>台号 / 桌号</label>' +
+        '    <input class="input" id="tbNo" type="text" maxlength="12" placeholder="比如：1号台" value="' + esc(draft.tableNo) + '"></div>' +
+        '  <div class="field"><label>日期</label>' +
+        '    <input class="input" id="tbDate" type="date" value="' + esc(draft.date) + '"></div>' +
+        '  <div class="field"><label>台费怎么收<span class="muted" style="font-weight:400"> — 默认「单独收」，不管它就行</span></label>' +
+        '    <div class="chips" style="margin-bottom:9px">' +
+        '      <button class="chip" type="button" data-mode="separate">单独收</button>' +
+        '      <button class="chip" type="button" data-mode="netting">从借款里扣</button>' +
+        '    </div>' +
+        '    <p class="hint" id="modeHint"></p></div>' +
+        '  <div class="field"><label>备注</label>' +
+        '    <input class="input" id="tbNote" type="text" maxlength="40" placeholder="比如：老张那桌" value="' + esc(draft.note) + '"></div>' +
         '</div>';
     }
 
     function bodyHtml() {
       return '' +
-        '<div class="field"><label>台号 / 桌号（可选）</label>' +
-        '  <input class="input" id="tbNo" type="text" maxlength="12" placeholder="比如：1号台" value="' + esc(draft.tableNo) + '"></div>' +
-
-        '<div class="field"><label>日期</label>' +
-        '  <input class="input" id="tbDate" type="date" value="' + esc(draft.date) + '"></div>' +
-
-        '<div class="field"><label>上桌人数</label>' +
-        '  <div class="chips" style="margin-bottom:9px">' +
-        HEAD_CHIPS.map(function (n) { return '<button class="chip" type="button" data-head="' + n + '">' + n + ' 人</button>'; }).join('') +
+        '<div class="field">' +
+        '  <label>上桌人数<span class="muted" style="font-weight:400"> — 就这两种，固定 3 人或 4 人</span></label>' +
+        '  <div class="chips" style="margin-bottom:0">' +
+        HEAD_CHIPS.map(function (n) { return '<button class="chip chip-head" type="button" data-head="' + n + '">' + n + ' 人</button>'; }).join('') +
         '  </div>' +
-        '  <input class="input num" id="tbPlayers" type="text" inputmode="numeric" value="' + draft.players + '"></div>' +
+        '</div>' +
 
-        '<div class="field"><label>每人台费（元）</label>' +
-        '  <div class="chips" style="margin-bottom:9px">' +
+        '<div class="field">' +
+        '  <div class="fld-row"><label>每人台费</label>' +
+        '    <input class="input num fld-in" id="tbPrice" type="text" inputmode="decimal" value="' + draft.unitPrice + '"></div>' +
+        '  <div class="chips" style="margin-bottom:0">' +
         FEE_CHIPS.map(function (n) { return '<button class="chip" type="button" data-fee="' + n + '">' + n + ' 元</button>'; }).join('') +
         '  </div>' +
-        '  <input class="input num" id="tbPrice" type="text" inputmode="decimal" value="' + draft.unitPrice + '"></div>' +
+        '</div>' +
 
-        '<div class="field"><label>台费合计（元）<span class="muted" style="font-weight:400"> — 自动算，可手改</span></label>' +
-        '  <div class="amount-row"><span class="cur">¥</span>' +
-        '    <input id="tbAmount" type="text" inputmode="decimal" placeholder="0" value="' + (draft.amount ? String(draft.amount) : '') + '"></div>' +
-        '  <p class="hint" id="feePreview"></p></div>' +
-
-        '<div class="field"><label>台费怎么收</label>' +
-        '  <div class="chips">' +
-        '    <button class="chip" type="button" data-mode="separate">单独收</button>' +
-        '    <button class="chip" type="button" data-mode="netting">从借款里扣</button>' +
-        '  </div>' +
-        '  <p class="hint" id="modeHint"></p></div>' +
+        '<div class="field">' +
+        '  <div class="fld-row"><label>台费合计<span class="muted" style="font-weight:400"> — 自动算</span></label>' +
+        '    <div class="money-mini"><span class="cur">¥</span>' +
+        '    <input id="tbAmount" type="text" inputmode="decimal" placeholder="0" value="' + (draft.amount ? String(draft.amount) : '') + '"></div></div>' +
+        '  <p class="hint" id="feePreview"></p>' +
+        '</div>' +
 
         (editing
           ? '<div class="field"><label>牌面（借款在台面里记）</label><div class="glist" id="editPlayers"></div></div>'
-          : '<div class="field"><label>谁借钱了（谁借记谁）<span class="muted" style="font-weight:400" id="guestCount"></span></label>' +
+          : '<div class="field">' +
+          '  <label>上桌的人<span class="muted" style="font-weight:400" id="guestCount"></span></label>' +
+          '  <input class="input" id="addName" type="text" maxlength="20" placeholder="打名字搜客户，点一下加上桌" value="' + esc(draft.kw) + '">' +
+          '  <div id="candBox">' + candHtml() + '</div>' +
+          '  <div id="recentBox">' + recentHtml() + '</div>' +
           '  <div id="guestBox">' + guestsHtml() + '</div>' +
-          '  <button class="btn btn-ghost" id="addGuest" type="button">' + icon('plus', 18) + '加上桌的人</button>' +
-          '  <div id="pickBox">' + pickHtml() + '</div>' +
-          '  <p class="hint">每位默认借 ¥' + DEF_STAKE + '，能单独改；自带现金不用借的，把金额清空（记 0）就行。</p></div>') +
+          '  <p class="hint">每位默认借 ¥' + DEF_STAKE + '，能单独改；自带现金不用借的，把金额清空（记 0）就行。' +
+          '一场就 3 人 / 4 人，人数满 4 人后再加的人（替手）只记借款，台费默认 0。</p>' +
+          '</div>') +
 
-        '<div class="field"><label>备注（可选）</label>' +
-        '  <input class="input" id="tbNote" type="text" maxlength="40" placeholder="比如：老张那桌" value="' + esc(draft.note) + '"></div>';
+        advBlock();
+    }
+
+    /** 台费合计 = 各人单独设的台费之和 + 没记名字的人按默认价补 */
+    function calcAmount() {
+      var sum = 0;
+      draft.guests.forEach(function (g) { sum += Number(g.fee) || 0; });
+      var rest = Math.max(0, (Number(draft.players) || 0) - draft.guests.length);
+      sum += rest * (Number(draft.unitPrice) || 0);
+      return R2(sum);
+    }
+
+    function feePreviewText() {
+      if (draft.amountTouched) return '已手改，按 ¥' + money(draft.amount) + ' 记';
+      if (draft.guests.length) {
+        var rest = Math.max(0, (Number(draft.players) || 0) - draft.guests.length);
+        var t = '按上桌的人算，台费合计 ¥' + money(draft.amount);
+        if (rest > 0) t += '（另 ' + rest + ' 人按默认 ¥' + money(draft.unitPrice) + '）';
+        return t;
+      }
+      return draft.players + ' 人 × ¥' + money(draft.unitPrice) + ' = ¥' + money(draft.amount);
+    }
+
+    /** 默认台费改了：没被单独改过、且占着上桌名额的人跟着走 */
+    function syncGuestFees() {
+      draft.guests.forEach(function (g) {
+        if (!g.feeTouched && !g.offHead) g.fee = R2(draft.unitPrice);
+      });
+      var box = $('#guestBox', sheet);
+      if (box) box.innerHTML = guestsHtml();
     }
 
     /** 只刷新派生显示，不重建 DOM（避免输一半丢焦点） */
     function refresh() {
       var b = $('#openBody', sheet);
       if (!b) return;
+      draft.players = fixHead(draft.players);       // 兜底：人数只可能是 3 / 4
       b.querySelectorAll('[data-head]').forEach(function (x) {
         x.classList.toggle('on', Number(x.getAttribute('data-head')) === Number(draft.players));
       });
@@ -668,14 +739,12 @@
         x.classList.toggle('on', x.getAttribute('data-mode') === draft.feeMode);
       });
       if (!draft.amountTouched) {
-        draft.amount = R2((Number(draft.players) || 0) * (Number(draft.unitPrice) || 0));
+        draft.amount = calcAmount();
         var ai = $('#tbAmount', b);
         if (ai) ai.value = draft.amount ? String(draft.amount) : '';
       }
       var pv = $('#feePreview', b);
-      if (pv) pv.textContent = draft.amountTouched
-        ? '已手改，按 ¥' + money(draft.amount) + ' 记'
-        : draft.players + ' 人 × ¥' + money(draft.unitPrice) + ' = ¥' + money(draft.amount);
+      if (pv) pv.textContent = feePreviewText();
       var mh = $('#modeHint', b);
       if (mh) {
         mh.textContent = draft.feeMode === 'netting'
@@ -689,24 +758,42 @@
     function renderGuests() {
       var box = $('#guestBox', sheet);
       if (box) box.innerHTML = guestsHtml();
+      var rb = $('#recentBox', sheet);
+      if (rb) rb.innerHTML = recentHtml();
+      var cb = $('#candBox', sheet);
+      if (cb) cb.innerHTML = candHtml();
       refresh();
     }
 
-    function renderPick() {
-      var box = $('#pickBox', sheet);
-      if (box) box.innerHTML = pickHtml();
-      var kwEl = $('#pickKw', sheet);
-      if (kwEl) { kwEl.focus(); kwEl.setSelectionRange(kwEl.value.length, kwEl.value.length); }
+    function renderCand() {
+      var cb = $('#candBox', sheet);
+      if (cb) cb.innerHTML = candHtml();
+    }
+
+    /** 名单变了以后让「上桌人数」跟上（只认 3 / 4；手动选过就锁住不动） */
+    function syncHeadcount() {
+      if (draft.playersTouched || !draft.guests.length) return;
+      draft.players = fixHead(draft.guests.length);
+      draft.amountTouched = false;
     }
 
     function addGuest(customerId) {
       var c = Store.getCustomer(customerId);
       if (!c) return;
       if (draft.guests.some(function (g) { return g.customerId === customerId; })) return;
-      draft.guests.push({ customerId: customerId, name: c.name, stake: DEF_STAKE });
-      // 没手动改过人数，就跟着上桌的人走
+      if (!draft.playersTouched) draft.players = fixHead(draft.guests.length + 1);
+      // 只有还占着「上桌人数」名额的这位，才默认收台费；
+      // 人数已经满（4 人）之后再加的人（替手 / 看牌的），只记借款，台费默认 0，要收自己填
+      var onTable = draft.guests.length < draft.players;
+      draft.guests.push({
+        customerId: customerId, name: c.name, stake: DEF_STAKE,
+        fee: onTable ? R2(draft.unitPrice) : 0, feeTouched: false, offHead: !onTable
+      });
+      draft.amountTouched = false;
+      draft.kw = '';
+      var kwEl = $('#addName', sheet);
+      if (kwEl) kwEl.value = '';
       renderGuests();
-      renderPick();
     }
 
     // 初始化
@@ -718,80 +805,101 @@
         var ps = Store.sessionPlayers(editing.id);
         ep.innerHTML = ps.length ? ps.map(function (p) {
           return '<div class="grow"><span class="grow-name">' + esc(p.name) + '</span>' +
-            '<span class="grow-sum">借 ¥' + esc(money(p.loanOut)) +
+            '<span class="grow-sum">台费 ¥' + esc(money(p.fee)) + ' · 借 ¥' + esc(money(p.loanOut)) +
             (p.loanBack > 0 ? ' · 还 ¥' + esc(money(p.loanBack)) : '') + '</span></div>';
         }).join('') : '<p class="hint">这场还没记借款。</p>';
       }
-      var dEl = $('#tbDate', sheet);
-      if (dEl) dEl.value = draft.date;
     }
 
     /* 事件：点击 */
     sheet.addEventListener('click', function (e) {
       var t;
-      if ((t = e.target.closest('[data-pickcust]'))) { addGuest(t.getAttribute('data-pickcust')); return; }
+      if ((t = e.target.closest('[data-addcust]'))) { addGuest(t.getAttribute('data-addcust')); return; }
+      if ((t = e.target.closest('[data-newcust]'))) {
+        var nm = (draft.kw || '').trim();
+        if (!nm) return;
+        var nc = Store.findCustomerByName(nm) || Store.addCustomer({ name: nm });
+        if (nc) addGuest(nc.id);
+        return;
+      }
       if ((t = e.target.closest('[data-delguest]'))) {
         var id = t.getAttribute('data-delguest');
         draft.guests = draft.guests.filter(function (g) { return g.customerId !== id; });
-        renderGuests(); renderPick(); return;
+        syncHeadcount();
+        renderGuests(); return;
+      }
+      if ((t = e.target.closest('#advToggle'))) {
+        draft.adv = !draft.adv;
+        var ab = $('#advBody', sheet);
+        if (ab) ab.hidden = !draft.adv;
+        t.classList.toggle('on', draft.adv);
+        return;
       }
       if ((t = e.target.closest('[data-head]'))) {
-        draft.players = Number(t.getAttribute('data-head'));
+        draft.players = fixHead(t.getAttribute('data-head'));
+        draft.playersTouched = true;                 // 手动选过，之后加人不再自动改
         draft.amountTouched = false;
-        var pi = $('#tbPlayers', sheet); if (pi) pi.value = String(draft.players);
         refresh(); return;
       }
       if ((t = e.target.closest('[data-fee]'))) {
         draft.unitPrice = Number(t.getAttribute('data-fee'));
         draft.amountTouched = false;
         var xi = $('#tbPrice', sheet); if (xi) xi.value = String(draft.unitPrice);
+        syncGuestFees();
         refresh(); return;
       }
       if ((t = e.target.closest('[data-mode]'))) {
         draft.feeMode = t.getAttribute('data-mode');
         refresh(); return;
       }
-      if ((t = e.target.closest('#addGuest'))) {
-        draft.picking = true; draft.pickKw = ''; renderPick(); return;
-      }
-      if ((t = e.target.closest('#pickDone'))) {
-        draft.picking = false;
-        var pb = $('#pickBox', sheet); if (pb) pb.innerHTML = '';
-        return;
-      }
-      if ((t = e.target.closest('#addNewCust'))) {
-        var nameEl = $('#newCustName', sheet);
-        var nm = nameEl ? nameEl.value.trim() : '';
-        if (!nm) { toast('先输个名字', 'err'); return; }
-        var c = Store.findCustomerByName(nm) || Store.addCustomer({ name: nm });
-        if (c) addGuest(c.id);
-        if (nameEl) nameEl.value = '';
-        return;
-      }
     });
 
     /* 事件：输入 */
     sheet.addEventListener('input', function (e) {
       var t = e.target;
-      if (t.id === 'tbPlayers') {
-        draft.players = Math.max(1, parseInt(t.value.replace(/\D/g, ''), 10) || 1);
-        draft.amountTouched = false; refresh(); return;
-      }
       if (t.id === 'tbPrice') {
         draft.unitPrice = parseFloat(String(t.value).replace(/[^\d.]/g, '')) || 0;
-        draft.amountTouched = false; refresh(); return;
+        draft.amountTouched = false;
+        syncGuestFees(); refresh(); return;
       }
       if (t.id === 'tbAmount') {
         draft.amount = parseFloat(String(t.value).replace(/[^\d.]/g, '')) || 0;
         draft.amountTouched = true; refresh(); return;
       }
-      if (t.id === 'pickKw') { draft.pickKw = t.value; renderPick(); return; }
+      if (t.id === 'addName') {
+        draft.kw = t.value;
+        renderCand(); return;
+      }
+      if (t.hasAttribute('data-gfee')) {
+        var fid = t.getAttribute('data-gfee');
+        var fv = parseFloat(String(t.value).replace(/[^\d.]/g, '')) || 0;
+        draft.guests.forEach(function (g) {
+          if (g.customerId === fid) { g.fee = R2(fv); g.feeTouched = true; }
+        });
+        refresh(); return;
+      }
       if (t.hasAttribute('data-stake')) {
         var cid = t.getAttribute('data-stake');
         var v = parseFloat(String(t.value).replace(/[^\d.]/g, '')) || 0;
         draft.guests.forEach(function (g) { if (g.customerId === cid) g.stake = R2(v); });
         return;
       }
+    });
+
+    /* 搜索框回车：只有一个候选就直接加 */
+    sheet.addEventListener('keydown', function (e) {
+      if (e.target.id !== 'addName' || e.key !== 'Enter') return;
+      e.preventDefault();
+      var have = haveIds();
+      var kw = (draft.kw || '').trim().toLowerCase();
+      if (!kw) return;
+      var list = Store.listCustomers().filter(function (c) {
+        if (have[c.id]) return false;
+        return c.name.toLowerCase().indexOf(kw) >= 0;
+      });
+      if (list.length === 1) { addGuest(list[0].id); return; }
+      var nc = Store.findCustomerByName(draft.kw);
+      if (nc) addGuest(nc.id);
     });
 
     /* 删除这一台 */
@@ -829,7 +937,7 @@
         return;
       }
 
-      var members = draft.guests.map(function (g) { return { customerId: g.customerId, stake: g.stake }; });
+      var members = draft.guests.map(function (g) { return { customerId: g.customerId, stake: g.stake, fee: g.fee }; });
       var s = Store.openSession({
         date: draft.date, players: players, unitPrice: unitPrice, amount: amount,
         feeMode: draft.feeMode, tableNo: draft.tableNo, note: draft.note, members: members
@@ -845,7 +953,11 @@
   function openSessionSheet(id) {
     var s = Store.getSession(id);
     if (!s) return;
-    var sheet = openSheet(sheetHead('台面') + '<div class="sheet-body" id="ssBody"></div>');
+    // 关掉台面后退回牌局页要刷新，不然「正在打的台」还是旧数据
+    var sheet = openSheet(
+      sheetHead('台面') + '<div class="sheet-body" id="ssBody"></div>',
+      function () { render(); }
+    );
 
     function timelineHtml() {
       var list = Store.sessionTxs(s.id);
@@ -908,6 +1020,7 @@
         else if (p.net < -0.004) { cls = 'paid'; state = '多还 ¥' + money(-p.net); }
         else { cls = 'zero'; state = '已清'; }
         var sub = [];
+        if (p.fee > 0) sub.push('台费 ¥' + money(p.fee));
         if (p.loanOut > 0) sub.push('借 ¥' + money(p.loanOut));
         if (p.loanBack > 0) sub.push('还 ¥' + money(p.loanBack));
         if (p.credit > 0) sub.push('挂账 ¥' + money(p.credit));
@@ -1076,7 +1189,7 @@
           var txt = p.net > 0.004 ? '欠 ¥' + money(p.net) : (p.net < -0.004 ? '多还 ¥' + money(-p.net) : '已清');
           return '<div class="prow">' +
             '<span class="prow-main"><span class="prow-name">' + esc(p.name) + '</span>' +
-            '<span class="prow-sub">借 ¥' + esc(money(p.loanOut)) + (p.loanBack > 0 ? ' · 还 ¥' + esc(money(p.loanBack)) : '') +
+            '<span class="prow-sub">台费 ¥' + esc(money(p.fee)) + ' · 借 ¥' + esc(money(p.loanOut)) + (p.loanBack > 0 ? ' · 还 ¥' + esc(money(p.loanBack)) : '') +
             (p.credit > 0 ? ' · 挂账 ¥' + esc(money(p.credit)) : '') + '</span></span>' +
             '<span class="prow-amt num ' + cls + '">' + esc(txt) + '</span>' +
             (p.net > 0.004 ? '<span class="prow-act"><button class="mini" type="button" data-settlepay="' + p.customerId + '">收款</button></span>' : '') +
@@ -1092,7 +1205,8 @@
       '<div class="sheet-body" id="csBody"></div>' +
       '<div class="sheet-foot">' +
       '  <button class="btn btn-primary" id="confirmClose" type="button">确认收台</button>' +
-      '</div>'
+      '</div>',
+      function () { render(); }
     );
     renderBody();
 
