@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  var CACHE = 'ledger-mahjong-v11';
+  var CACHE = 'ledger-mahjong-v12';
   var ASSETS = [
     './',
     './index.html',

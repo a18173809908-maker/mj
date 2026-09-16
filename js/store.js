@@ -508,13 +508,16 @@ function humanDate(s) {
       });
       var feeMode = s.feeMode === 'netting' ? 'netting' : 'separate';
       var fee = round2(s.amount || 0);
+      var creditFeeOnly = round2(creditFee - creditCig);
       return {
         fee: fee,
         feeMode: feeMode,
-        creditFee: round2(creditFee - creditCig),   // 赊掉的台费
+        creditFee: creditFeeOnly,                   // 赊掉的台费（没收到的）
         creditCig: round2(creditCig),               // 赊掉的烟钱（代买垫付）
         credit: round2(creditFee),                  // 挂账合计
-        cashFee: feeMode === 'netting' ? 0 : round2(fee - (creditFee - creditCig)),
+        feePaid: round2(fee - creditFeeOnly),       // 台费已收到（含现金与从借款里扣的）
+        cashFee: feeMode === 'netting' ? 0 : round2(fee - creditFeeOnly),
+        deductFee: feeMode === 'netting' ? round2(fee) : 0,   // 开台时从借款里扣掉的台费
         loanOut: round2(loanOut),
         loanBack: round2(loanBack),
         netLoan: round2(loanOut - loanBack),
@@ -539,6 +542,60 @@ function humanDate(s) {
       t.incomeId = sessionId;
       this.save();
       return t;
+    },
+
+    /**
+     * 收台时：把某位玩家的台费标成「收到了」还是「记他账上」。
+     * 挂账状态不另存字段——真相就是流水里有没有这笔 category='fee' 的欠款，
+     * 跟开台时挂的台费走同一套机制，两边永远不会对不上。
+     */
+    setFeeCredit: function (sessionId, customerId, on, amount) {
+      var s = this.getIncome(sessionId);
+      if (!s || !customerId) return false;
+      var amt;
+      if (amount === undefined || amount === null) {
+        var mine = null;
+        this.sessionPlayers(sessionId).forEach(function (p) { if (p.customerId === customerId) mine = p; });
+        amt = round2(mine ? mine.fee : 0);
+      } else {
+        amt = round2(amount);
+      }
+      var hit = this.data.txs.filter(function (t) {
+        return t.incomeId === sessionId && t.customerId === customerId &&
+          t.type === 'owe' && normCategory(t.category) === 'fee';
+      });
+      if (on) {
+        if (!(amt > 0)) return false;          // 这位台费 0 元，没什么可挂的
+        if (hit.length) {
+          hit[0].amount = amt;                 // 已有挂账：只校准金额，不重复记
+          for (var k = hit.length - 1; k >= 1; k--) this.data.txs.splice(this.data.txs.indexOf(hit[k]), 1);
+        } else {
+          this.data.txs.push({
+            id: uid('t'), customerId: customerId, type: 'owe', category: 'fee',
+            amount: amt, date: s.date, note: '台费 · 收台时记的',
+            incomeId: sessionId, createdAt: Date.now()
+          });
+        }
+      } else {
+        var self = this, ids = {};
+        hit.forEach(function (t) { ids[t.id] = 1; });
+        this.data.txs = this.data.txs.filter(function (t) { return !ids[t.id]; });
+      }
+      this.save();
+      return true;
+    },
+
+    /** 某位玩家这场台费收没收到：'cash' 已收现金 / 'deduct' 从借款里扣 / 'credit' 记他账上 */
+    feeStateOf: function (sessionId, customerId) {
+      var s = this.getIncome(sessionId);
+      if (!s) return 'cash';
+      var has = false;
+      this.data.txs.forEach(function (t) {
+        if (t.incomeId === sessionId && t.customerId === customerId &&
+          t.type === 'owe' && normCategory(t.category) === 'fee') has = true;
+      });
+      if (has) return 'credit';
+      return s.feeMode === 'netting' ? 'deduct' : 'cash';
     },
 
     /**

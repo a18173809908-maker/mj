@@ -460,6 +460,7 @@ textarea.input{ height:auto; padding:12px 14px; min-height:64px; resize:none; li
 }
 .toast.ok  { background:rgba(15,76,58,.94); }
 .toast.err { background:rgba(180,44,36,.94); }
+.toast.warn { background:rgba(138,90,30,.94); }
 @keyframes toastIn{ from{ opacity:0; transform:translateY(10px) scale(.96);} to{ opacity:1; transform:none; } }
 
 /* ---------- 对话框 ---------- */
@@ -889,5 +890,29 @@ body.locked .fab{ visibility:hidden; }
 .st-div{ height:1px; background:var(--line); margin:4px 0; }
 .st-strong span{ color:var(--ink); font-weight:600; }
 .st-strong b{ font-size:19px; }
+.st-sub span{ color:var(--ink-2); }
+.st-sub b{ font-size:15px; }
+.st-sub2{ padding:4px 0; }
+.st-sub2 span{ color:var(--ink-3); font-size:13px; }
+.st-sub2 b{ font-size:14px; font-weight:600; color:var(--ink-2); }
+
+/* 收台：每人一张卡（台费收没收到） */
+.flist{ display:flex; flex-direction:column; }
+.fcard{ padding:12px 0; border-bottom:1px solid var(--line); }
+.fcard:last-child{ border-bottom:0; }
+.fcard-top{ display:flex; align-items:baseline; gap:10px; }
+.fcard-top .prow-main{ flex:1 1 auto; min-width:0; }
+.fcard-acts{ display:flex; align-items:center; gap:8px; margin-top:9px; }
+.fcard-sp{ flex:1 1 auto; }
+.pfee{
+  padding:6px 11px; border-radius:10px; border:1.5px solid var(--line);
+  background:var(--bg-elev); font-size:13px; font-weight:600; color:var(--ink-2);
+  cursor:pointer; white-space:nowrap; font-family:inherit;
+}
+.pfee:active{ filter:brightness(.96); }
+.pfee.ok{ border-color:rgba(27,138,87,.34); background:var(--green-soft); color:var(--green); }
+.pfee.credit{ border-color:#E8D6BF; background:#FFFBF6; color:#8A5A1E; }
+.pfee.on{ background:var(--bg-sunken); color:var(--ink-3); cursor:default; }
+.pfee.off{ border-style:dashed; color:var(--ink-3); cursor:default; font-weight:500; }
 
 .btn-paid{ background:linear-gradient(145deg,#1F9C63,#14724A); color:#fff; box-shadow:0 6px 16px rgba(27,138,87,.24); }
