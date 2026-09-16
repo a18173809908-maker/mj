@@ -1071,6 +1071,20 @@ function humanDate(s) {
       return true;
     },
 
+    /* ---------- 上次台费单价：开台默认价跟着最近一次走，少按一次 ---------- */
+
+    lastUnitPrice: function () {
+      var p = Number(this.data.settings.lastUnitPrice);
+      return p > 0 ? round2(p) : 20;
+    },
+
+    rememberUnitPrice: function (price) {
+      var p = round2(price);
+      if (!(p > 0) || p === Number(this.data.settings.lastUnitPrice)) return;
+      this.data.settings.lastUnitPrice = p;
+      this.save();
+    },
+
     /* ---------- 计算 ---------- */
 
     /** 某客户余额：正=他欠我，负=我欠他 */

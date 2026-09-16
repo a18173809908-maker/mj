@@ -3,9 +3,11 @@
 """云端后端一体化测试：组装干净站点 → 起服务 → 跑接口测试 → 跑端到端 → 收尾
 
 用法：
-    python tools/run-cloud-tests.py                     # 默认测 Node 后端
+    python tools/run-cloud-tests.py                     # 默认测 Node 后端（接口 + 两个 e2e）
     python tools/run-cloud-tests.py --backend=php       # 测 PHP 后端
     python tools/run-cloud-tests.py --api-only          # 只跑接口断言，不跑浏览器
+    python tools/run-cloud-tests.py --no-api            # 只跑浏览器端到端
+    python tools/run-cloud-tests.py --e2e=test-v221.js  # 只跑指定的 e2e（可重复写）
 
 两种后端的差别只在「怎么把服务起起来」，接口测试与端到端测试完全共用：
     php  → php -S 一个进程，静态 + /api 全包
@@ -102,10 +104,16 @@ def start_node_backend(stage, port):
 
 def main():
     api_only = '--api-only' in sys.argv
+    no_api = '--no-api' in sys.argv
     backend = 'node'
+    e2e_list = []
     for a in sys.argv[1:]:
         if a.startswith('--backend='):
             backend = a.split('=', 1)[1].strip().lower()
+        elif a.startswith('--e2e='):
+            e2e_list.append(a.split('=', 1)[1].strip())
+    if not e2e_list:
+        e2e_list = ['test-v20.js', 'test-v221.js']
     if backend not in ('node', 'php'):
         sys.exit('--backend 只支持 node 或 php')
 
@@ -126,9 +134,12 @@ def main():
             return 1
 
         print('\n########## 一、后端接口测试 ##########\n')
-        code = subprocess.run(
-            [sys.executable, os.path.join(HERE, 'test-cloud-api.py'), base],
-            cwd=ROOT).returncode
+        if no_api:
+            print('（--no-api 跳过）')
+        else:
+            code = subprocess.run(
+                [sys.executable, os.path.join(HERE, 'test-cloud-api.py'), base],
+                cwd=ROOT).returncode
 
         if not api_only:
             # 端到端测试要从「全新服务器」开始：清掉刚才接口测试留下的数据
@@ -138,11 +149,15 @@ def main():
             env = dict(os.environ)
             env['MJ_BASE'] = base
             env['NODE_PATH'] = os.path.join(NODE_WORKSPACE, 'node_modules')
-            e2e = subprocess.run(
-                [node_bin(), os.path.join(NODE_WORKSPACE, 'test-v20.js')],
-                cwd=NODE_WORKSPACE, env=env).returncode
-            if e2e != 0:
-                code = e2e
+            for name in e2e_list:
+                script = os.path.join(NODE_WORKSPACE, name)
+                if not os.path.exists(script):
+                    print('跳过（找不到脚本）：%s' % name)
+                    continue
+                print('---- %s ----' % name)
+                rc = subprocess.run([node_bin(), script], cwd=NODE_WORKSPACE, env=env).returncode
+                if rc != 0:
+                    code = rc
     finally:
         for p in procs:
             try:

@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '2.2.0';
+  var VERSION = '2.2.1';
 
   var state = {
     route: 'home',
@@ -498,21 +498,29 @@
         openCloseSheet(b.getAttribute('data-closetbl'));
       });
     });
+    // 已收工的台：照这桌再开（原班人马、台费借款预填）
+    view.querySelectorAll('[data-reopen]').forEach(function (b) {
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openOpenSheet({ copyFrom: b.getAttribute('data-reopen') });
+      });
+    });
   }
 
   /** 正在打的台：一行 */
   function openTableRowHtml(s) {
     var ss = Store.sessionSummary(s);
+    var openAt = s.openAt || s.createdAt || Date.now();
     var bits = [];
-    bits.push('开台 ' + (hmTime(s.openAt) || '--:--') + ' · 打了 ' + durText(Date.now() - (s.openAt || s.createdAt || Date.now())));
+    bits.push('开台 ' + esc(hmTime(s.openAt) || '--:--') + ' · 打了 <b class="num" data-dur="' + openAt + '">' + esc(durText(Date.now() - openAt)) + '</b>');
     if (s.players) bits.push(s.players + ' 人');
-    if (ss.loanOut > 0) bits.push('借出 ¥' + money(ss.loanOut) + (ss.loanBack > 0 ? ' · 已还 ¥' + money(ss.loanBack) : ''));
+    if (ss.loanOut > 0) bits.push('借出 ¥' + esc(money(ss.loanOut)) + (ss.loanBack > 0 ? ' · 已还 ¥' + esc(money(ss.loanBack)) : ''));
     return '<div class="tx tx-openrow">' +
       '<button class="tx-hit" data-table="' + s.id + '" type="button">' +
       '<span class="tx-badge live">台</span>' +
       '<span class="tx-main">' +
       '<span class="tx-title">' + esc(tableName(s)) + ' · 台费 ¥' + esc(money(ss.fee)) + '</span>' +
-      '<span class="tx-note">' + esc(bits.join(' · ')) + '</span>' +
+      '<span class="tx-note">' + bits.join(' · ') + '</span>' +
       '</span>' +
       '<span class="tx-side">' +
       '<span class="tx-amt num owe">¥' + esc(money(ss.netLoan)) + '</span>' +
@@ -523,7 +531,7 @@
       '</div>';
   }
 
-  /** 已收工的台：一行 */
+  /** 已收工的台：一行（右侧可「再开」：原班人马、台费借款预填） */
   function closedRowHtml(s) {
     var ss = Store.sessionSummary(s);
     var meta = s.players + ' 人 × ¥' + money(s.unitPrice);
@@ -535,7 +543,8 @@
     if (ss.feePending > 0) sub.push('台费待确认 ¥' + money(ss.feePending));
     if (ss.creditCig > 0) sub.push('烟钱挂账 ¥' + money(ss.creditCig));
     if (ss.loanOut > 0) sub.push('借出 ¥' + money(ss.loanOut) + (ss.loanBack > 0 ? ' · 已还 ¥' + money(ss.loanBack) : ''));
-    return '<button class="tx" data-table="' + s.id + '" type="button">' +
+    return '<div class="tx tx-openrow">' +
+      '<button class="tx-hit" data-table="' + s.id + '" type="button">' +
       '<span class="tx-badge ' + (ss.netLoan > 0.004 ? 'credit' : 'inc') + '">场</span>' +
       '<span class="tx-main">' +
       '<span class="tx-title num">' + esc(meta) + '</span>' +
@@ -545,7 +554,9 @@
       '<span class="tx-amt num inc">+¥' + esc(money(ss.fee)) + '</span>' +
       (hmTime(s.closeAt || s.createdAt) ? '<span class="tx-time num">' + hmTime(s.closeAt || s.createdAt) + '</span>' : '') +
       '</span>' +
-      '</button>';
+      '</button>' +
+      '<button class="mini tx-quickclose" data-reopen="' + s.id + '" type="button" title="照这桌再开：原班人马，台费借款预填好">再开</button>' +
+      '</div>';
   }
 
   /* ---------- 开台 / 改台 ---------- */
@@ -553,6 +564,8 @@
   function openOpenSheet(opts) {
     opts = opts || {};
     var editing = opts.tableId ? Store.getSession(opts.tableId) : null;
+    // 「照这桌再开」：从一场已收工的台把原班人马、台费借款预填进来
+    var copyFrom = (!editing && opts.copyFrom) ? Store.getSession(opts.copyFrom) : null;
     var R2 = Store.util.round2;
 
     var draft = {
@@ -560,10 +573,10 @@
       date: editing ? editing.date : today(new Date()),
       players: editing ? fixHead(editing.players) : 4,
       playersTouched: !!editing,          // 人数被手动改过 → 不再跟着上桌的人走
-      unitPrice: editing ? (Number(editing.unitPrice) || 20) : 20,
+      unitPrice: editing ? (Number(editing.unitPrice) || 20) : (copyFrom ? (Number(copyFrom.unitPrice) || Store.lastUnitPrice()) : Store.lastUnitPrice()),
       amount: editing ? Number(editing.amount) || 0 : 0,
       amountTouched: !!editing,
-      feeMode: editing ? (editing.feeMode || 'separate') : 'separate',
+      feeMode: editing ? (editing.feeMode || 'separate') : (copyFrom ? (copyFrom.feeMode || 'separate') : 'separate'),
       note: editing ? (editing.note || '') : '',
       guests: [],
       kw: '',
@@ -571,8 +584,22 @@
     };
     if (!editing) draft.amount = R2(draft.players * draft.unitPrice);
 
+    // 照这桌再开：名单照抄（借款按他这场的累计借出预填，台费照抄；想改随时改）
+    if (copyFrom) {
+      Store.sessionPlayers(copyFrom.id).forEach(function (p) {
+        var onTable = draft.guests.length < draft.players;   // 满 4 之后的是替手，台费 0
+        draft.guests.push({
+          customerId: p.customerId, name: p.name,
+          stake: p.loanOut > 0 ? p.loanOut : 0,
+          fee: onTable ? p.fee : 0, feeTouched: true, offHead: !onTable
+        });
+      });
+      syncHeadcount();
+      draft.amountTouched = false;
+    }
+
     var sheet = openSheet(
-      sheetHead(editing ? '改这一台' : '开一台') +
+      sheetHead(editing ? '改这一台' : (copyFrom ? '照这桌再开' : '开一台')) +
       '<div class="sheet-body" id="openBody"></div>' +
       '<div class="sheet-foot">' +
       (editing ? '<div class="btn-row" style="margin-bottom:10px"><button class="btn btn-danger" id="delTable" type="button">' + icon('trash', 18) + '删除这一台</button></div>' : '') +
@@ -929,6 +956,7 @@
       var amount = R2(draft.amount || 0);
       if (!(amount > 0)) amount = R2(players * unitPrice);
       if (!(amount > 0)) { toast('先填台费', 'err'); return; }
+      Store.rememberUnitPrice(unitPrice);   // 下次开台默认就用这个价
 
       if (editing) {
         Store.updateIncome(editing.id, {
@@ -1149,6 +1177,15 @@
     mask.addEventListener('click', function (e) { if (e.target === mask) close(); });
     $('[data-loan-cancel]', root).addEventListener('click', close);
 
+    // 手机键盘上按回车 = 确认，不用挪手指去够按钮
+    // 注意绑在 mask 上（每次开弹窗都重建）：#dialog-root 是常驻元素，绑它会把监听越积越多
+    mask.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      if (e.target.id !== 'loanAmt' && e.target.id !== 'loanNote') return;
+      e.preventDefault();
+      $('[data-loan-yes]', root).click();
+    });
+
     $('[data-loan-yes]', root).addEventListener('click', function () {
       var v = R2(parseFloat(String(amtEl.value).replace(/[^\d.]/g, '')) || 0);
       if (!(v > 0)) { toast('先填个金额', 'err'); amtEl.focus(); return; }
@@ -1304,9 +1341,21 @@
     });
 
     $('#confirmClose', sheet).addEventListener('click', function () {
-      if (!wasClosed) Store.closeSession(id);
-      closeSheet();
-      toast(wasClosed ? '已保存' : '已收台', 'ok');
+      if (!wasClosed) {
+        var ss = Store.sessionSummary(Store.getSession(id));   // 收台前把账算好
+        Store.closeSession(id);
+        closeSheet();
+        // 报个数：收现多少、借款里扣多少、挂账多少、牌面还欠多少，一眼清账
+        var parts = [];
+        if (ss.cashFee > 0) parts.push('收现 ¥' + money(ss.cashFee));
+        if (ss.deductFee > 0) parts.push('借款里扣 ¥' + money(ss.deductFee));
+        if (ss.creditFee > 0) parts.push('挂账 ¥' + money(ss.creditFee));
+        if (ss.netLoan > 0) parts.push('牌面还欠 ¥' + money(ss.netLoan));
+        toast('已收台' + (parts.length ? '：' + parts.join(' · ') : ''), 'ok', 3000);
+      } else {
+        closeSheet();
+        toast('已保存', 'ok');
+      }
       render();
     });
   }
@@ -2073,15 +2122,41 @@
       rows + '</div></div>';
   }
 
-  /** 连接 / 重新连接云端 */
-  function openCloudConnectSheet() {
+  /** 连接 / 重新连接云端
+   *  opts.reason: 'boot'     进页面时发现这台手机还没连上云端，主动请用户连一次
+   *               'mismatch' 刚输的进入密码云端不认（多半是两台手机密码不一样）
+   */
+  function openCloudConnectSheet(opts) {
+    opts = (opts && opts.reason) ? opts : {};      // 被当成事件回调传进来时兜底
+    var reason = opts.reason || '';
+    var info = opts.info || (Cloud.status() || {}).info || {};
+
+    var lead;
+    if (reason === 'mismatch') {
+      lead = '这个密码云端不认。云端上已经有一本账了——请输入<b>另一台手机在用的那个密码</b>。';
+    } else if (reason === 'boot') {
+      lead = '这台手机还没连上云端，你在别的手机上记的账不会自己跑过来。<b>输一次密码连上，以后每次打开都会自动同步。</b>';
+    } else {
+      lead = '输入你的「进入密码」——就是打开这个应用时输的那个，云端用同一个密码，不用记两个。';
+    }
+
+    var extra = '';
+    if (info && info.hasLedger && info.counts) {
+      extra += '<p class="hint">云端现有 <b>' + info.counts.customers + '</b> 位客户 · <b>' + info.counts.incomes + '</b> 场 · <b>' + info.counts.txs + '</b> 条流水' +
+        (info.savedAt ? '（' + esc(cloudWhen(Date.parse(info.savedAt))) + ' 更新）' : '') + '。</p>';
+    }
+    if (hasLocalData()) {
+      extra += '<p class="hint">这台手机上已经记了账。连上后<b>会问你要用云端的还是本机的</b>，看清再点。</p>';
+    }
+
     var sheet = openSheet(
-      sheetHead('连接云端备份') +
+      sheetHead(reason === 'mismatch' ? '连不上云端' : '连接云端备份') +
       '<div class="sheet-body">' +
-      '  <p class="hint">输入你的「进入密码」——就是打开这个应用时输的那个，云端用同一个密码，不用记两个。</p>' +
+      '  <p class="hint">' + lead + '</p>' +
+      extra +
       '  <div class="field"><label>进入密码</label>' +
       '    <input class="input" id="cloudPw" type="password" inputmode="numeric" autocomplete="current-password" placeholder="4-6 位数字"></div>' +
-      '  <div class="field"><label>密码提示（选填）</label>' +
+      '  <div class="field"><label>密码提示（选填，第一次连云端时才用得上）</label>' +
       '    <input class="input" id="cloudHint" type="text" maxlength="20" placeholder="忘了时给自己看的提示"></div>' +
       '  <p class="hint" id="cloudMsg"></p>' +
       '</div>' +
@@ -2120,7 +2195,10 @@
           Cloud.sync({}, function (e2, r) {
             closeSheet();
             if (e2 || !r) { toast('已连接云端', 'ok'); render(); return; }
-            cloudHandleResult(r, true);
+            if (r.state === 'same') toast('已连上云端，两边账目一致', 'ok');
+            else if (r.state === 'offline') toast('连上了但同步没成功，稍后会自动重试', 'err');
+            else cloudHandleResult(r);        // 拉取/推送/冲突都让用户看见
+            render();
           });
         };
         if (info.needsSetup) Cloud.setup(pw, hint, next);
@@ -2288,6 +2366,21 @@
     }
   }
 
+  /**
+   * 这台手机还没连上云端时，进页面主动请用户连一次。
+   * 24 小时最多自动弹一次——这次不想连就不反复打扰，
+   * 想连的时候「我的 → 连接云端备份」随时进得去。
+   */
+  function askConnectOnce(opts) {
+    var K = 'ledger_mahjong_cloud_ask';
+    var GAP = 24 * 3600 * 1000;
+    var last = 0;
+    try { last = Number(localStorage.getItem(K) || 0) || 0; } catch (e) {}
+    if (last && Date.now() - last < GAP) return;
+    try { localStorage.setItem(K, String(Date.now())); } catch (e) {}
+    setTimeout(function () { openCloudConnectSheet(opts || {}); }, 400);   // 等首屏画完再弹
+  }
+
   /** 启动时接云端：后端不在就完全静默，App 照常当单机用 */
   function cloudBoot() {
     if (!global.Cloud) return;
@@ -2309,21 +2402,37 @@
           else cloudHandleResult(r, true);
         });
       };
+
       if (info.needsSetup) {
-        if (pin) Cloud.setup(pin, '', function (e) { if (!e) afterAuth(); });
+        // 云端还没有账本：拿刚设的密码建一个
+        if (pin) { Cloud.setup(pin, '', function (e) { if (!e) afterAuth(); }); return; }
+        askConnectOnce({ info: info, reason: 'boot' });
         return;
       }
+
       if (!Cloud.loggedIn()) {
-        if (pin) Cloud.login(pin, function (e) { if (!e) afterAuth(); });
+        // 刚输过密码（解锁 / 首次设置）→ 直接拿去登录，用户不用再输一遍
+        if (pin) {
+          Cloud.login(pin, function (e) {
+            if (!e) return afterAuth();
+            // 云端不认这个密码（多半两台手机密码不一样）→ 当面说清楚，每次都弹
+            setTimeout(function () { openCloudConnectSheet({ info: info, reason: 'mismatch' }); }, 400);
+          });
+          return;
+        }
+        // 「记住 7 天」免密进来、或这台手机从没连过云端 → 请用户连一次，连上后长期自动
+        askConnectOnce({ info: info, reason: 'boot' });
         return;
       }
+
+      // 已登录：每次进页面都自动同步一次（拉别处的改动 / 上传本机改动）
       afterAuth();
     });
   }
 
   function mountCloud() {
     var c = $('#cloudConnect');
-    if (c) c.addEventListener('click', openCloudConnectSheet);
+    if (c) c.addEventListener('click', function () { openCloudConnectSheet(); });
     var n = $('#cloudNow');
     if (n) n.addEventListener('click', function () {
       toast('正在同步…', 'ok', 1200);
@@ -2374,6 +2483,14 @@
   function bootApp() {
     Store.load();
     render();
+
+    // 「打了 X 分钟」每分钟自己走字，不用退出重进才刷新
+    setInterval(function () {
+      if (document.hidden) return;
+      document.querySelectorAll('[data-dur]').forEach(function (el) {
+        el.textContent = durText(Date.now() - (Number(el.getAttribute('data-dur')) || 0));
+      });
+    }, 60000);
 
     // 云端：有后端就自动连、自动同步；没有就静默当单机用
     cloudBoot();
