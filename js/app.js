@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '2.2.3';
+  var VERSION = '2.2.4';
 
   var state = {
     route: 'home',
@@ -103,6 +103,40 @@
         done(String(input.value || '').trim() || null);
       });
       setTimeout(function () { input.focus(); }, 260);
+    });
+  }
+
+  /**
+   * 从几个按钮里挑一个的小弹窗（比如「现金 / 微信」）。返回选项的 value，取消返回 null。
+   */
+  function chooseDlg(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var root = $('#dialog-root');
+      root.innerHTML =
+        '<div class="dlg-mask">' +
+        '  <div class="dlg" role="dialog" aria-modal="true">' +
+        '    <h3>' + esc(opts.title || '') + '</h3>' +
+        (opts.text ? '    <p>' + esc(opts.text) + '</p>' : '') +
+        '    <div class="dlg-opts">' +
+        (opts.options || []).map(function (o) {
+          return '<button class="btn ' + (o.primary ? 'btn-primary' : 'btn-ghost') + '" data-pick="' + esc(o.value) + '" type="button">' + esc(o.label) + '</button>';
+        }).join('') +
+        '      <button class="btn btn-ghost" data-pick="" type="button">取消</button>' +
+        '    </div>' +
+        '  </div>' +
+        '</div>';
+      var mask = $('.dlg-mask', root);
+      requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
+      function done(val) {
+        mask.classList.remove('show');
+        setTimeout(function () { root.innerHTML = ''; }, 200);
+        resolve(val);
+      }
+      mask.addEventListener('click', function (e) { if (e.target === mask) done(null); });
+      root.querySelectorAll('[data-pick]').forEach(function (b) {
+        b.addEventListener('click', function () { done(b.getAttribute('data-pick') || null); });
+      });
     });
   }
 
@@ -254,6 +288,17 @@
       '  </div>' +
       '</div>' +
 
+      (ov.transferCount > 0
+        ? '<div class="section" style="margin:0 16px 12px"><div class="card">' +
+          '<button class="tx" id="goTransferHome" type="button">' +
+          '<span class="tx-badge wait">转</span>' +
+          '<span class="tx-main"><span class="tx-title">待转给客户</span>' +
+          '<span class="tx-note">' + ov.transferCount + ' 笔还没转出去 · 都是他们赢的钱</span></span>' +
+          '<span class="tx-side"><span class="tx-amt num wait">¥' + esc(money(ov.transferDue)) + '</span>' +
+          '<span class="tx-time">去转</span></span>' +
+          '</button></div></div>'
+        : '') +
+
       '<div class="search">' + icon('search', 19) +
       '  <input id="custSearch" type="search" placeholder="搜姓名 / 电话" value="' + esc(state.custKeyword) + '">' +
       '</div>' +
@@ -307,6 +352,8 @@
     if (addTop) addTop.addEventListener('click', function () { openCustomerSheet(null); });
     var addLink = $('#addCustBtn');
     if (addLink) addLink.addEventListener('click', function () { openCustomerSheet(null); });
+    var gth = $('#goTransferHome');
+    if (gth) gth.addEventListener('click', function () { openTransferSheet(); });
     var demo = $('#loadDemoBtn');
     if (demo) demo.addEventListener('click', loadDemo);
   }
@@ -348,7 +395,7 @@
     var bal = s.balance;
     var balText, stateText, cls;
     if (bal > 0.004) { cls = 'owe'; balText = '¥' + money(bal); stateText = '他还欠你这么多'; }
-    else if (bal < -0.004) { cls = 'paid'; balText = '¥' + money(-bal); stateText = '你多收了他的，后面少收点'; }
+    else if (bal < -0.004) { cls = 'paid'; balText = '¥' + money(-bal); stateText = '待转给他（他赢的钱）'; }
     else { cls = 'zero'; balText = '¥0'; stateText = s.count ? '账已结清' : '还没有往来记录'; }
 
     var txs = Store.listTxs({ customerId: id });
@@ -370,6 +417,9 @@
       '  <div class="label">' + (cls === 'paid' ? '你应付' : '当前应收') + '</div>' +
       '  <div class="amt num ' + cls + '">' + balText + '</div>' +
       '  <div class="state">' + stateText + '</div>' +
+      (Store.pendingTransferOf(id) > 0.004
+        ? '  <div class="state" style="color:#2D5F92">还有 <b class="num">¥' + esc(money(Store.pendingTransferOf(id))) + '</b> 要转给他 ' +
+          '<button class="link" id="goTransferFromCust" type="button">去转</button></div>' : '') +
       (parts.length ? '  <div class="breakdown">累计欠款构成：' + parts.join(' · ') + '</div>' : '') +
       '</div>' +
 
@@ -398,6 +448,8 @@
     var call = $('#callBtn');
     if (call) call.addEventListener('click', function () { location.href = 'tel:' + c.phone; });
     $('[data-act="editCust"]').addEventListener('click', function () { openCustomerSheet(id); });
+    var gtc = $('#goTransferFromCust');
+    if (gtc) gtc.addEventListener('click', function () { openTransferSheet(); });
     view.querySelectorAll('[data-tx]').forEach(function (b) {
       b.addEventListener('click', function () { openTxSheet({ txId: b.getAttribute('data-tx') }); });
     });
@@ -503,6 +555,19 @@
       '  </div>' +
       '</div>';
 
+    // 待转给客户的钱：他们赢了别的客户，现金/微信要转出去——别忘了
+    var pendN = Store.pendingTransferCount();
+    if (pendN > 0) {
+      html += '<div class="section" style="margin-bottom:14px"><div class="card">' +
+        '<button class="tx" id="goTransfer" type="button">' +
+        '<span class="tx-badge wait">转</span>' +
+        '<span class="tx-main"><span class="tx-title">待转给客户</span>' +
+        '<span class="tx-note">' + pendN + ' 笔还没转出去 · 都是他们赢的钱</span></span>' +
+        '<span class="tx-side"><span class="tx-amt num wait">¥' + esc(money(Store.pendingTransferTotal())) + '</span>' +
+        '<span class="tx-time">去转</span></span>' +
+        '</button></div></div>';
+    }
+
     // 正在打的台
     if (openList.length) {
       html += '<div class="section"><div class="section-head"><h2>正在打的台</h2>' +
@@ -556,6 +621,8 @@
         openOpenSheet({ copyFrom: b.getAttribute('data-reopen') });
       });
     });
+    var gt = $('#goTransfer');
+    if (gt) gt.addEventListener('click', function () { openTransferSheet(); });
   }
 
   /** 正在打的台：一行（标题直接显示上桌的人，不点进去也知道是谁） */
@@ -1103,7 +1170,7 @@
       return '<div class="plist">' + ps.map(function (p) {
         var state, cls;
         if (p.net > 0.004) { cls = 'owe'; state = '欠 ¥' + money(p.net); }
-        else if (p.net < -0.004) { cls = 'paid'; state = '多还 ¥' + money(-p.net); }
+        else if (p.net < -0.004) { cls = 'paid'; state = '待转 ¥' + money(-p.net); }
         else { cls = 'zero'; state = '已清'; }
         var sub = [];
         if (p.fee > 0) sub.push('台费 ¥' + money(p.fee));
@@ -1202,6 +1269,7 @@
       '    </div>' +
       '    <div class="amount-row"><span class="cur">¥</span>' +
       '      <input id="loanAmt" type="text" inputmode="decimal" placeholder="0"></div>' +
+      (isPay ? '    <p class="hint" id="loanTip" style="display:none"></p>' : '') +
       '    <input class="input" id="loanNote" type="text" maxlength="30" placeholder="' +
       (isPay ? '备注（可选）：赢了先还一部分' : '备注（可选）：输光了再借') + '">' +
       '    <div class="btn-row" style="margin-top:16px">' +
@@ -1221,14 +1289,29 @@
     }
 
     var amtEl = $('#loanAmt', root);
+    var tipEl = $('#loanTip', root);
+    function readAmt() { return R2(parseFloat(String(amtEl.value).replace(/[^\d.]/g, '')) || 0); }
+    // 收的钱比欠的多 → 多的那截不是「多还」，是他赢了别的客户的钱，记进待转账
+    function syncTip() {
+      if (!isPay || !tipEl) return;
+      var over = R2(readAmt() - owed);
+      if (over > 0.004) {
+        tipEl.innerHTML = '多的 <b class="num">¥' + esc(money(over)) + '</b> 不是多还——' +
+          '记进「待转账」，回头现金/微信转给他';
+        tipEl.style.display = '';
+      } else {
+        tipEl.style.display = 'none';
+      }
+    }
     amtEl.addEventListener('input', function () {
       var v = String(amtEl.value).replace(/[^\d.]/g, '');
       var i = v.indexOf('.');
       if (i >= 0) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/\./g, '');
       if (v !== amtEl.value) amtEl.value = v;
+      syncTip();
     });
     root.querySelectorAll('[data-qamt]').forEach(function (b) {
-      b.addEventListener('click', function () { amtEl.value = b.getAttribute('data-qamt'); });
+      b.addEventListener('click', function () { amtEl.value = b.getAttribute('data-qamt'); syncTip(); });
     });
     mask.addEventListener('click', function (e) { if (e.target === mask) close(); });
     $('[data-loan-cancel]', root).addEventListener('click', close);
@@ -1243,18 +1326,220 @@
     });
 
     $('[data-loan-yes]', root).addEventListener('click', function () {
-      var v = R2(parseFloat(String(amtEl.value).replace(/[^\d.]/g, '')) || 0);
+      var v = readAmt();
       if (!(v > 0)) { toast('先填个金额', 'err'); amtEl.focus(); return; }
-      Store.addSessionTx(s.id, {
-        customerId: c.id, type: isPay ? 'paid' : 'owe',
-        amount: v, note: $('#loanNote', root).value.trim()
-      });
+      var note = $('#loanNote', root).value.trim();
+      var res;
+      if (isPay) {
+        // 欠款最多收到 0；多的那截自动进「待转账」，回头转给他
+        res = Store.settlePay({ customerId: c.id, amount: v, sessionId: s.id, cap: owed, note: note });
+      } else {
+        Store.addSessionTx(s.id, { customerId: c.id, type: 'owe', amount: v, note: note });
+        res = { paid: v, transfer: 0 };
+      }
       close();
-      toast((isPay ? '收到 ' : '借给 ') + c.name + ' ¥' + money(v), 'ok');
+      if (isPay && res.transfer > 0.004) {
+        toast('收到 ¥' + money(res.paid) + '，多的 ¥' + money(res.transfer) + ' 记进待转账了', 'ok');
+      } else {
+        toast((isPay ? '收到 ' : '借给 ') + c.name + ' ¥' + money(v), 'ok');
+      }
       setTimeout(function () { if (opts.onDone) opts.onDone(); else render(); }, 60);
     });
 
     setTimeout(function () { amtEl.focus(); }, 260);
+  }
+
+  /* ---------- 待转给客户（他们赢了别人的钱） ---------- */
+
+  function transferHow(x) {
+    if (x.method === 'cash') return '现金';
+    if (x.method === 'wechat') return '微信';
+    return '已转';
+  }
+
+  /** 待转账清单：谁的钱还没转出去，转完点一下销账 */
+  function openTransferSheet() {
+    var sheet = openSheet(
+      sheetHead('待转给客户') + '<div class="sheet-body" id="trBody"></div>',
+      function () { render(); }
+    );
+
+    function paint() {
+      var body = $('#trBody', sheet);
+      if (!body) return;
+      var pend = Store.listTransfers('pending');
+      var done = Store.listTransfers('done');
+      var html =
+        '<div class="settle">' +
+        '  <div class="st-row"><span>还没转出去的</span><b class="num wait">¥' + esc(money(Store.pendingTransferTotal())) + '</b></div>' +
+        '  <div class="st-row st-sub"><span>待转 ' + pend.length + ' 笔</span><b class="num">已转 ' + done.length + ' 笔</b></div>' +
+        '</div>' +
+        '<p class="hint" style="margin-top:0">客人赢了别的客户的钱，是他该拿走的——收钱时多出来的会自动记在这儿；' +
+        '现金或微信转给他之后，点「转给他了」销账。</p>';
+
+      if (!pend.length) {
+        html += '<div class="empty" style="padding:26px 16px"><p>这会儿没有要转的钱<br>收款收多了会自动记到这儿</p></div>';
+      } else {
+        html += '<div class="flist">' + pend.map(function (x) {
+          var c = Store.getCustomer(x.customerId);
+          var s = x.sessionId ? Store.getIncome(x.sessionId) : null;
+          var sub = [];
+          if (s) sub.push(tableName(s));                                 // 台号本身就是「9月16日 17:58」
+          else sub.push(x.date.slice(5).replace('-', '/'));
+          if (x.note) sub.push(x.note);
+          return '<div class="fcard">' +
+            '<div class="fcard-top">' +
+            '<span class="prow-main"><span class="prow-name">' + esc(c ? c.name : '（客户已删）') + '</span>' +
+            '<span class="prow-sub">' + esc(sub.join(' · ')) + '</span></span>' +
+            '<span class="prow-amt num wait">¥' + esc(money(x.amount)) + '</span>' +
+            '</div>' +
+            '<div class="fcard-acts">' +
+            '<button class="mini mini-ok" type="button" data-trpay="' + x.id + '">转给他了</button>' +
+            '<span class="fcard-sp"></span>' +
+            '<button class="mini" type="button" data-trdel="' + x.id + '">删掉</button>' +
+            '</div>' +
+            '</div>';
+        }).join('') + '</div>';
+      }
+
+      html += '<div class="field"><label>自己补一笔</label>' +
+        '<button class="btn btn-ghost" id="trAdd" type="button">' + icon('plus', 18) + '记一笔别的待转账</button></div>';
+
+      if (done.length) {
+        html += '<div class="field"><label>转过的（' + done.length + ' 笔）</label><div class="flist">' +
+          done.slice(0, 20).map(function (x) {
+            var c = Store.getCustomer(x.customerId);
+            return '<div class="frow">' +
+              '<span class="frow-main">' + esc(c ? c.name : '（已删）') + ' · ' + esc(transferHow(x)) + '</span>' +
+              '<span class="frow-amt num">¥' + esc(money(x.amount)) + '</span>' +
+              '<button class="mini" type="button" data-trundo="' + x.id + '">撤回</button>' +
+              '</div>';
+          }).join('') + '</div></div>';
+      }
+
+      body.innerHTML = html;
+      bind();
+    }
+
+    function bind() {
+      $('#trAdd', sheet).addEventListener('click', function () { openTransferAddSheet(); });
+      sheet.querySelectorAll('[data-trpay]').forEach(function (b) {
+        b.addEventListener('click', function () { payOne(b.getAttribute('data-trpay')); });
+      });
+      sheet.querySelectorAll('[data-trdel]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var x = Store.getTransfer(b.getAttribute('data-trdel'));
+          if (!x) return;
+          var c = Store.getCustomer(x.customerId);
+          confirmDlg({
+            title: '删掉这笔待转账？',
+            text: (c ? c.name : '') + ' ¥' + money(x.amount) + '。删了就不再提醒你转给他了。',
+            okText: '删掉', danger: true
+          }).then(function (yes) {
+            if (!yes) return;
+            Store.deleteTransfer(x.id);
+            toast('已删掉', 'ok');
+            paint();
+          });
+        });
+      });
+      sheet.querySelectorAll('[data-trundo]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          Store.undoTransferDone(b.getAttribute('data-trundo'));
+          toast('已撤回，回到待转', 'ok');
+          paint();
+        });
+      });
+    }
+
+    function payOne(id) {
+      var x = Store.getTransfer(id);
+      if (!x) return;
+      var c = Store.getCustomer(x.customerId);
+      chooseDlg({
+        title: '把 ¥' + money(x.amount) + ' 转给 ' + (c ? c.name : '客户'),
+        text: '怎么给他的？点完这笔就销账了。',
+        options: [
+          { value: 'cash', label: '现金给他了', primary: true },
+          { value: 'wechat', label: '微信转给他了' }
+        ]
+      }).then(function (m) {
+        if (!m) return;
+        Store.markTransferDone(id, m);
+        toast('已销账：' + (m === 'wechat' ? '微信' : '现金') + '转 ¥' + money(x.amount), 'ok');
+        paint();
+      });
+    }
+
+    paint();
+  }
+
+  /** 手工补一笔待转账：点客户 + 填金额 */
+  function openTransferAddSheet() {
+    var custs = Store.listCustomers().map(function (c) {
+      return { c: c, last: Store.summaryOf(c.id).lastDate || '' };
+    });
+    custs.sort(function (a, b) { return (b.last || '').localeCompare(a.last || ''); });
+
+    var sel = { customerId: null };
+    var sheet = openSheet(
+      sheetHead('记一笔待转账') +
+      '<div class="sheet-body">' +
+      '  <div class="field"><label>转给谁</label>' +
+      '    <input class="input" id="trSearch" type="search" placeholder="搜姓名，或从下面点选" style="margin-bottom:9px">' +
+      '    <div class="picker" id="trGrid"></div>' +
+      '  </div>' +
+      '  <div class="field"><label>多少钱（元）</label>' +
+      '    <div class="amount-row"><span class="cur">¥</span>' +
+      '      <input id="trAmt" type="text" inputmode="decimal" placeholder="0"></div>' +
+      '    <div class="chips" style="margin:9px 0 0">' + AMOUNT_CHIPS.map(function (v) {
+        return '<button class="chip" data-tramt="' + v + '" type="button">' + v + '</button>';
+      }).join('') + '</div>' +
+      '  </div>' +
+      '  <div class="field"><label>备注（可选）</label>' +
+      '    <input class="input" id="trNote" type="text" maxlength="30" placeholder="比如：赢了老张的钱"></div>' +
+      '</div>' +
+      '<div class="sheet-foot"><button class="btn btn-primary" id="trSave" type="button">记下</button></div>'
+    );
+
+    var grid = $('#trGrid', sheet), sb = $('#trSearch', sheet), amtEl = $('#trAmt', sheet);
+    function renderGrid() {
+      var kw = sb.value.trim().toLowerCase();
+      var list = kw ? custs.filter(function (r) {
+        return (r.c.name || '').toLowerCase().indexOf(kw) >= 0 || (r.c.phone || '').indexOf(kw) >= 0;
+      }) : custs;
+      var html = list.slice(0, 8).map(function (r) {
+        var on = sel.customerId === r.c.id;
+        return '<button class="pick' + (on ? ' on' : '') + '" data-trcust="' + r.c.id + '" type="button">' +
+          '<span class="pn">' + esc(r.c.name) + '</span>' +
+          '<span class="pv num">' + (r.last ? '最近 ' + esc(r.last.slice(5).replace('-', '/')) : '还没有往来') + '</span>' +
+          '</button>';
+      }).join('');
+      if (!html) html = '<span class="muted" style="grid-column:1/-1;padding:6px 2px">没找到，先去客户页建他</span>';
+      grid.innerHTML = html;
+      grid.querySelectorAll('[data-trcust]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          sel.customerId = b.getAttribute('data-trcust');
+          renderGrid();
+        });
+      });
+    }
+    renderGrid();
+    sb.addEventListener('input', renderGrid);
+    sheet.querySelectorAll('[data-tramt]').forEach(function (b) {
+      b.addEventListener('click', function () { amtEl.value = b.getAttribute('data-tramt'); });
+    });
+    $('#trSave', sheet).addEventListener('click', function () {
+      var v = Store.util.round2(parseFloat(String(amtEl.value).replace(/[^\d.]/g, '')) || 0);
+      if (!sel.customerId) { toast('先点一个客户', 'err'); return; }
+      if (!(v > 0)) { toast('先填金额', 'err'); amtEl.focus(); return; }
+      Store.addTransfer({ customerId: sel.customerId, amount: v, note: $('#trNote', sheet).value.trim() });
+      closeSheet();
+      toast('记下了，转给他记得销账', 'ok');
+      // 回到清单，看得见刚补的这笔。延时必须大于 closeSheet 的 300ms 收尾，
+      // 否则那个定时器会把刚打开的新抽屉又清掉（抽屉套抽屉的老坑）
+      setTimeout(function () { openTransferSheet(); }, 380);
+    });
   }
 
   /* ---------- 收台结算 ---------- */
@@ -1286,7 +1571,7 @@
       var s = Store.getSession(id) || s0;
       return ps.map(function (p) {
         var cls = p.net > 0.004 ? 'owe' : (p.net < -0.004 ? 'paid' : 'zero');
-        var txt = p.net > 0.004 ? '欠 ¥' + money(p.net) : (p.net < -0.004 ? '多还 ¥' + money(-p.net) : '已清');
+        var txt = p.net > 0.004 ? '欠 ¥' + money(p.net) : (p.net < -0.004 ? '待转 ¥' + money(-p.net) : '已清');
         var sub = [];
         if (p.loanOut > 0) sub.push('借 ¥' + money(p.loanOut));
         if (p.loanBack > 0) sub.push('还 ¥' + money(p.loanBack));
@@ -1940,7 +2225,7 @@
         var on = sel.customerId === r.c.id;
         return '<button class="pick' + (on ? ' on' : '') + '" data-pick="' + r.c.id + '" type="button">' +
           '<span class="pn">' + esc(r.c.name) + '</span>' +
-          '<span class="pv num">' + (r.bal > 0.004 ? '欠 ¥' + esc(money(r.bal)) : (r.bal < -0.004 ? '你付 ¥' + esc(money(-r.bal)) : '已结清')) + '</span>' +
+          '<span class="pv num">' + (r.bal > 0.004 ? '欠 ¥' + esc(money(r.bal)) : (r.bal < -0.004 ? '待转 ¥' + esc(money(-r.bal)) : '已结清')) + '</span>' +
           '</button>';
       }).join('');
       if (kw && !list.length) html = '<span class="muted" style="grid-column:1/-1;padding:6px 2px">没有这个名字，可用下方「新客户」</span>';
@@ -2077,10 +2362,19 @@
       if (editing) {
         Store.updateTx(editing.id, { amount: amt, type: sel.type, category: sel.category, date: dateVal, note: note });
         toast('已更新', 'ok');
+      } else if (sel.type === 'paid') {
+        // 收款：欠款最多收到 0；多的那截不是「多还」，进「待转账」回头转给他
+        var r = Store.settlePay({ customerId: custId, amount: amt, category: sel.category, date: dateVal, note: note });
+        var c1 = Store.getCustomer(custId);
+        if (r.transfer > 0.004) {
+          toast((c1 ? c1.name : '') + ' 收到 ¥' + money(r.paid) + '，多的 ¥' + money(r.transfer) + ' 记进待转账了', 'ok');
+        } else {
+          toast((c1 ? c1.name : '') + ' 收款 ' + money(amt) + '，已保存', 'ok');
+        }
       } else {
         Store.addTx({ customerId: custId, type: sel.type, category: sel.category, amount: amt, date: dateVal, note: note });
-        var c = Store.getCustomer(custId);
-        toast((c ? c.name : '') + (sel.type === 'owe' ? ' 记欠 ' : ' 收款 ') + money(amt) + '，已保存', 'ok');
+        var c2 = Store.getCustomer(custId);
+        toast((c2 ? c2.name : '') + ' 记欠 ' + money(amt) + '，已保存', 'ok');
       }
       closeSheet();
       render();

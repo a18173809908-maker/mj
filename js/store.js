@@ -122,7 +122,7 @@ function humanDate(s) {
   /* ---------- Store ---------- */
 
   var Store = {
-    data: { version: 2, customers: [], txs: [], incomes: [], settings: {} },
+    data: { version: 2, customers: [], txs: [], incomes: [], transfers: [], settings: {} },
 
     /* ---------- 持久化 ---------- */
 
@@ -145,6 +145,7 @@ function humanDate(s) {
             this.data.customers = Array.isArray(p.customers) ? p.customers : [];
             this.data.txs = Array.isArray(p.txs) ? p.txs : [];
             this.data.incomes = Array.isArray(p.incomes) ? p.incomes : [];
+            this.data.transfers = Array.isArray(p.transfers) ? p.transfers : [];
             this.data.settings = p.settings && typeof p.settings === 'object' ? p.settings : {};
             this.data.version = p.version || 2;
           }
@@ -166,6 +167,7 @@ function humanDate(s) {
     migrate: function () {
       var changed = false;
       var self = this;
+      if (!Array.isArray(this.data.transfers)) { this.data.transfers = []; changed = true; }
       // v2.2 的「老场次补确认」只做一次
       var needSeed = !(this.data.settings && this.data.settings.feeCheckedSeed === true);
       // v2.2 用得到：场次 → 这场出现过的人
@@ -210,6 +212,49 @@ function humanDate(s) {
       });
       if (!Array.isArray(this.data.settings.cigs) || !this.data.settings.cigs.length) {
         this.data.settings.cigs = defaultCigs();
+        changed = true;
+      }
+      // v2.2.4：老版本「收的钱比欠的多」会记成「多还」（余额变负）。那其实不是多还，
+      // 是客户赢了别的客户的钱、要现金/微信转给他。这些负余额一次性剥离成「待转账」条目，
+      // 同时把多收的那一截从 paid 流水里削掉——余额从此不再出现负值。只做一次。
+      if (!(this.data.settings && this.data.settings.transferSeed === true)) {
+        var balMap = {};
+        this.data.txs.forEach(function (t) {
+          balMap[t.customerId] = round2((balMap[t.customerId] || 0) + (t.type === 'paid' ? -1 : 1) * Number(t.amount || 0));
+        });
+        Object.keys(balMap).forEach(function (cid) {
+          var bal = balMap[cid];
+          if (!(bal < -0.004)) return;
+          var left = round2(-bal);                     // 要剥出来的总额
+          var mine = self.data.txs.filter(function (t) { return t.customerId === cid && t.type === 'paid'; });
+          mine.sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0); });
+          for (var i = 0; i < mine.length && left > 0.004; i++) {
+            var t2 = mine[i];
+            var cut = Math.min(round2(Number(t2.amount || 0)), left);
+            if (!(cut > 0)) continue;
+            t2.amount = round2(Number(t2.amount) - cut);
+            if (!(t2.amount > 0)) t2.amount = 0;        // 削干净了，下面统一剔掉
+            left = round2(left - cut);
+            changed = true;
+          }
+          self.data.txs = self.data.txs.filter(function (t) { return !(t.type === 'paid' && !(Number(t.amount) > 0)); });
+          var stripped = round2(-bal - left);
+          if (stripped > 0.004) {
+            self.data.transfers.push({
+              id: uid('x'),
+              customerId: cid,
+              amount: stripped,
+              date: toDateStr(new Date()),
+              sessionId: null,
+              note: '旧版「多还」转过来的',
+              status: 'pending',
+              method: '',
+              doneAt: null,
+              createdAt: Date.now()
+            });
+          }
+        });
+        this.data.settings.transferSeed = true;
         changed = true;
       }
       if (changed) this.save();
@@ -401,6 +446,142 @@ function humanDate(s) {
       if (this.data.txs.length === n) return false;
       this.save();
       return true;
+    },
+
+    /* ---------- 待转账（客户赢了别人的钱，要现金/微信转给他） ---------- */
+
+    getTransfer: function (id) {
+      var list = this.data.transfers || [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === id) return list[i];
+      }
+      return null;
+    },
+
+    /** 待转账清单：待转的在前，已转的沉到后面（各自按日期倒序） */
+    listTransfers: function (status) {
+      var out = (this.data.transfers || []).slice();
+      if (status) out = out.filter(function (x) { return x.status === status; });
+      out.sort(function (a, b) {
+        if (a.status !== b.status) return a.status === 'pending' ? -1 : 1;
+        if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+        return (b.createdAt || 0) - (a.createdAt || 0);
+      });
+      return out;
+    },
+
+    /** 某客户还有多少没转给他 */
+    pendingTransferOf: function (customerId) {
+      var s = 0;
+      (this.data.transfers || []).forEach(function (x) {
+        if (x.status === 'pending' && x.customerId === customerId) s += Number(x.amount || 0);
+      });
+      return round2(s);
+    },
+
+    /** 一共还欠着要转出去多少 */
+    pendingTransferTotal: function () {
+      var s = 0;
+      (this.data.transfers || []).forEach(function (x) {
+        if (x.status === 'pending') s += Number(x.amount || 0);
+      });
+      return round2(s);
+    },
+
+    pendingTransferCount: function () {
+      return (this.data.transfers || []).filter(function (x) { return x.status === 'pending'; }).length;
+    },
+
+    /** 登记一笔「待转给客户」：他赢了别人的钱，现金/微信要转给他 */
+    addTransfer: function (info) {
+      var amount = round2(info.amount);
+      if (!(amount > 0)) return null;
+      if (!this.getCustomer(info.customerId)) return null;
+      if (!Array.isArray(this.data.transfers)) this.data.transfers = [];
+      var x = {
+        id: uid('x'),
+        customerId: info.customerId,
+        amount: amount,
+        date: info.date || toDateStr(new Date()),
+        sessionId: info.sessionId || null,
+        note: String(info.note || '').trim(),
+        status: 'pending',
+        method: '',
+        doneAt: null,
+        createdAt: Date.now()
+      };
+      this.data.transfers.push(x);
+      this.save();
+      return x;
+    },
+
+    /** 转给他了（现金 / 微信） */
+    markTransferDone: function (id, method) {
+      var x = this.getTransfer(id);
+      if (!x) return null;
+      x.status = 'done';
+      x.method = (method === 'cash' || method === 'wechat') ? method : 'other';
+      x.doneAt = Date.now();
+      this.save();
+      return x;
+    },
+
+    /** 点错了：撤回成「待转」 */
+    undoTransferDone: function (id) {
+      var x = this.getTransfer(id);
+      if (!x) return null;
+      x.status = 'pending';
+      x.method = '';
+      x.doneAt = null;
+      this.save();
+      return x;
+    },
+
+    deleteTransfer: function (id) {
+      var n = (this.data.transfers || []).length;
+      this.data.transfers = (this.data.transfers || []).filter(function (x) { return x.id !== id; });
+      if (this.data.transfers.length === n) return false;
+      this.save();
+      return true;
+    },
+
+    /**
+     * 收他的钱（收欠款 / 牌面收款）。**多的那截不算「多还」**——那是他赢了别的客户的钱，
+     * 自动进「待转账」，回头现金/微信转给他。欠款最多收到 0，余额不再出现负值。
+     * 返回 { paid, transfer }：这次多少抵了欠款、多少变成了要转给他的钱。
+     */
+    settlePay: function (info) {
+      var amt = round2(info.amount);
+      if (!(amt > 0)) return { paid: 0, transfer: 0 };
+      var cust = this.getCustomer(info.customerId);
+      if (!cust) return { paid: 0, transfer: 0 };
+      // cap：这笔钱最多能抵掉多少欠款（牌面收款只抵这一场，客户页收款抵全部欠款）
+      var bal = Math.max(0, this.balanceOf(cust.id));
+      var cap = (info.cap === undefined || info.cap === null) ? bal : Math.max(0, Number(info.cap));
+      var owed = Math.min(cap, bal);
+      var paid = round2(Math.min(amt, owed));
+      var extra = round2(amt - paid);
+      if (paid > 0) {
+        if (info.sessionId) {
+          this.addSessionTx(info.sessionId, {
+            customerId: cust.id, type: 'paid', category: info.category || 'loan',
+            amount: paid, date: info.date, note: info.note
+          });
+        } else {
+          this.addTx({
+            customerId: cust.id, type: 'paid', category: info.category,
+            amount: paid, date: info.date, note: info.note
+          });
+        }
+      }
+      var item = null;
+      if (extra > 0.004) {
+        item = this.addTransfer({
+          customerId: cust.id, amount: extra, date: info.date,
+          sessionId: info.sessionId || null, note: info.note
+        });
+      }
+      return { paid: paid, transfer: extra, transferItem: item };
     },
 
     /* ---------- 营业收入 ---------- */
@@ -1233,9 +1414,13 @@ function humanDate(s) {
       var today = this.incomeStats(todayStr, todayStr);
       var month = this.incomeStats(monthFrom, null);
       var openTables = this.data.incomes.filter(function (i) { return i.status === 'open'; }).length;
+      // 待转给客户的（他们赢了别人的钱、还没转出去）也算「我欠别人」——这是他该拿走的
+      var transferDue = this.pendingTransferTotal();
       return {
         receivable: round2(receivable),
-        payable: round2(payable),
+        payable: round2(payable + transferDue),
+        transferDue: transferDue,
+        transferCount: this.pendingTransferCount(),
         net: round2(receivable - payable),
         debtors: debtors,
         creditors: creditors,
@@ -1426,7 +1611,7 @@ function humanDate(s) {
 
     /** 清空全部数据 */
     clearAll: function () {
-      this.data = { version: 2, customers: [], txs: [], incomes: [], settings: {} };
+      this.data = { version: 2, customers: [], txs: [], incomes: [], transfers: [], settings: {} };
       this.data.settings.cigs = defaultCigs();
       this.save();
     },

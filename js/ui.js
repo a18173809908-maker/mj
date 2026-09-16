@@ -67,7 +67,7 @@
     else { cls = 'zero'; text = '0'; }
     return '<span class="' + cls + '">' +
       '<span class="v num">' + text + '</span>' +
-      (cls === 'zero' ? '' : '<span class="u">' + (cls === 'owe' ? '应收' : '应付') + '</span>') +
+      (cls === 'zero' ? '' : '<span class="u">' + (cls === 'owe' ? '应收' : '待转') + '</span>') +
       '</span>';
   }
 
