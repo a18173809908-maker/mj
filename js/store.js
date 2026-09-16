@@ -158,6 +158,15 @@ function humanDate(s) {
     /** 老数据补齐新字段 */
     migrate: function () {
       var changed = false;
+      var self = this;
+      // v2.2 的「老场次补确认」只做一次
+      var needSeed = !(this.data.settings && this.data.settings.feeCheckedSeed === true);
+      // v2.2 用得到：场次 → 这场出现过的人
+      var bySession = {};
+      this.data.txs.forEach(function (t) {
+        if (!t.incomeId) return;
+        (bySession[t.incomeId] || (bySession[t.incomeId] = {}))[t.customerId] = 1;
+      });
       this.data.txs.forEach(function (t) {
         if (!t.category) { t.category = 'fee'; changed = true; }
       });
@@ -170,7 +179,24 @@ function humanDate(s) {
         if (i.openAt === undefined) { i.openAt = i.createdAt || Date.now(); changed = true; }
         if (i.closeAt === undefined) { i.closeAt = i.status === 'closed' ? (i.openAt || Date.now()) : null; changed = true; }
         if (i.tableNo === undefined) { i.tableNo = ''; changed = true; }
+        // v2.2：台费默认从「已收」改成了「待确认」。**升级前就收过台的老场次**一律视为
+        // 当时已经过过一遍，补进 feeChecked，免得翻开历史账看到满屏「待确认」。
+        // 只补这一次（靠 settings.feeCheckedSeed 认门）——否则新版里万一有没收尾的场次，
+        // 刷新一下就会被悄悄补成「已收」，等于又变回默认已收了。
+        if (needSeed && i.status === 'closed') {
+          if (!i.feeChecked || typeof i.feeChecked !== 'object') { i.feeChecked = {}; changed = true; }
+          var seen = bySession[i.id] || {};
+          Object.keys(seen).forEach(function (cid) {
+            if (!i.feeChecked[cid]) { i.feeChecked[cid] = 1; changed = true; }
+          });
+          if (i.feeMap && typeof i.feeMap === 'object') {
+            Object.keys(i.feeMap).forEach(function (cid) {
+              if (!i.feeChecked[cid]) { i.feeChecked[cid] = 1; changed = true; }
+            });
+          }
+        }
       });
+      if (needSeed) { this.data.settings.feeCheckedSeed = true; changed = true; }
       // 老流水没有 incomeId 字段，补上以免被误判为营收生成
       this.data.txs.forEach(function (t) {
         if (t.incomeId === undefined) { t.incomeId = null; changed = true; }
@@ -509,14 +535,20 @@ function humanDate(s) {
       var feeMode = s.feeMode === 'netting' ? 'netting' : 'separate';
       var fee = round2(s.amount || 0);
       var creditFeeOnly = round2(creditFee - creditCig);
+
+      // v2.2：台费默认不再是「已收」，而是「待确认」。
+      // 老板还没过这个人之前，这笔钱既不当作收到、也不当作欠款——账面不许替他表态。
+      var pending = this.feePendingFeeOf(s);
+
       return {
         fee: fee,
         feeMode: feeMode,
-        creditFee: creditFeeOnly,                   // 赊掉的台费（没收到的）
+        creditFee: creditFeeOnly,                   // 赊掉的台费（还没收到的）
         creditCig: round2(creditCig),               // 赊掉的烟钱（代买垫付）
         credit: round2(creditFee),                  // 挂账合计
-        feePaid: round2(fee - creditFeeOnly),       // 台费已收到（含现金与从借款里扣的）
-        cashFee: feeMode === 'netting' ? 0 : round2(fee - creditFeeOnly),
+        feePending: pending,                        // 还没确认的台费（不知道收没收到）
+        feePaid: round2(fee - creditFeeOnly - pending),  // 确认收到的台费（现金 + 从借款里扣）
+        cashFee: feeMode === 'netting' ? 0 : round2(fee - creditFeeOnly - pending),
         deductFee: feeMode === 'netting' ? round2(fee) : 0,   // 开台时从借款里扣掉的台费
         loanOut: round2(loanOut),
         loanBack: round2(loanBack),
@@ -524,6 +556,28 @@ function humanDate(s) {
         // 这场老板净掏出去多少现金 = 借出 − 收回 − 从借款里抵扣的台费
         cashOut: round2(loanOut - loanBack - (feeMode === 'netting' ? fee : 0))
       };
+    },
+
+    /**
+     * 某场还没确认的台费合计。
+     * 「没确认」＝ 老板还没点过这个人，且这人也没挂账（挂账本身就等于表过态）。
+     * 这笔钱不算已收、也不算欠款，只是悬着——避免账面替老板宣布「收到了」。
+     */
+    feePendingFeeOf: function (sessionOrId) {
+      var s = typeof sessionOrId === 'string' ? this.getIncome(sessionOrId) : sessionOrId;
+      if (!s) return 0;
+      if (s.feeMode === 'netting') return 0;      // 开台时就从借款里扣了，不存在待确认
+      var credited = {}, pending = 0;
+      this.data.txs.forEach(function (t) {
+        if (t.incomeId === s.id && t.type === 'owe' && normCategory(t.category) === 'fee') credited[t.customerId] = 1;
+      });
+      this.sessionPlayers(s.id).forEach(function (p) {
+        if (!(p.fee > 0)) return;
+        if (credited[p.customerId]) return;                            // 挂账＝已经过过了
+        if (s.feeChecked && s.feeChecked[p.customerId]) return;        // 明确标过收到
+        pending += p.fee;
+      });
+      return round2(pending);
     },
 
     /** 局中/收台时：给某位玩家记一笔借款（owe）或还款（paid） */
@@ -545,13 +599,16 @@ function humanDate(s) {
     },
 
     /**
-     * 收台时：把某位玩家的台费标成「收到了」还是「记他账上」。
-     * 挂账状态不另存字段——真相就是流水里有没有这笔 category='fee' 的欠款，
-     * 跟开台时挂的台费走同一套机制，两边永远不会对不上。
+     * 收台时：把某位玩家的台费标成 'cash' 收到了 / 'credit' 记他账上 / 'pending' 还没定。
+     * 金额真相永远只在流水里（挂账才写一笔 category='fee' 的欠款）；
+     * 场次上的 feeChecked 只记「这个人我过过了」，不参与任何金额计算——
+     * 所以真相始终只有一份，撤销挂账＝删掉那笔流水，人自然回到「已收」。
      */
-    setFeeCredit: function (sessionId, customerId, on, amount) {
+    setFeeState: function (sessionId, customerId, state, amount) {
       var s = this.getIncome(sessionId);
       if (!s || !customerId) return false;
+      if (state !== 'cash' && state !== 'credit' && state !== 'pending') return false;
+
       var amt;
       if (amount === undefined || amount === null) {
         var mine = null;
@@ -560,32 +617,49 @@ function humanDate(s) {
       } else {
         amt = round2(amount);
       }
-      var hit = this.data.txs.filter(function (t) {
-        return t.incomeId === sessionId && t.customerId === customerId &&
-          t.type === 'owe' && normCategory(t.category) === 'fee';
+
+      // 先把这场这个人的台费挂账流水全撤掉，下面按需要重建
+      var ids = {};
+      this.data.txs.forEach(function (t) {
+        if (t.incomeId === sessionId && t.customerId === customerId &&
+          t.type === 'owe' && normCategory(t.category) === 'fee') ids[t.id] = 1;
       });
-      if (on) {
-        if (!(amt > 0)) return false;          // 这位台费 0 元，没什么可挂的
-        if (hit.length) {
-          hit[0].amount = amt;                 // 已有挂账：只校准金额，不重复记
-          for (var k = hit.length - 1; k >= 1; k--) this.data.txs.splice(this.data.txs.indexOf(hit[k]), 1);
-        } else {
-          this.data.txs.push({
-            id: uid('t'), customerId: customerId, type: 'owe', category: 'fee',
-            amount: amt, date: s.date, note: '台费 · 收台时记的',
-            incomeId: sessionId, createdAt: Date.now()
-          });
-        }
-      } else {
-        var self = this, ids = {};
-        hit.forEach(function (t) { ids[t.id] = 1; });
+      if (Object.keys(ids).length) {
         this.data.txs = this.data.txs.filter(function (t) { return !ids[t.id]; });
+      }
+
+      if (!s.feeChecked || typeof s.feeChecked !== 'object') s.feeChecked = {};
+      if (state === 'pending') delete s.feeChecked[customerId];
+      else s.feeChecked[customerId] = 1;
+
+      if (state === 'credit' && amt > 0) {
+        this.data.txs.push({
+          id: uid('t'), customerId: customerId, type: 'owe', category: 'fee',
+          amount: amt, date: s.date, note: '台费 · 收台时记的',
+          incomeId: sessionId, createdAt: Date.now()
+        });
       }
       this.save();
       return true;
     },
 
-    /** 某位玩家这场台费收没收到：'cash' 已收现金 / 'deduct' 从借款里扣 / 'credit' 记他账上 */
+    /** 兼容旧调用：on=true 记他账上，on=false 算收到 */
+    setFeeCredit: function (sessionId, customerId, on, amount) {
+      return this.setFeeState(sessionId, customerId, on ? 'credit' : 'cash', amount);
+    },
+
+    /** 场次上这位玩家的台费确认过没有（只看名单，不看钱） */
+    feeCheckedOf: function (sessionId, customerId) {
+      var s = this.getIncome(sessionId);
+      if (!s || !s.feeChecked) return false;
+      return !!s.feeChecked[customerId];
+    },
+
+    /**
+     * 某位玩家这场台费的状态：
+     *  'pending' 还没确认（老板还没过这个人）/ 'cash' 确认收到 /
+     *  'deduct' 开台时就从借款里扣了 / 'credit' 记他账上
+     */
     feeStateOf: function (sessionId, customerId) {
       var s = this.getIncome(sessionId);
       if (!s) return 'cash';
@@ -595,7 +669,32 @@ function humanDate(s) {
           t.type === 'owe' && normCategory(t.category) === 'fee') has = true;
       });
       if (has) return 'credit';
-      return s.feeMode === 'netting' ? 'deduct' : 'cash';
+      if (s.feeMode === 'netting') return 'deduct';
+      if (this.feeCheckedOf(sessionId, customerId)) return 'cash';
+      return 'pending';
+    },
+
+    /** 这场台费还有几个人没确认（收台前必须清零） */
+    feePendingCount: function (sessionId) {
+      var self = this, n = 0, s = this.getIncome(sessionId);
+      if (!s || s.feeMode === 'netting') return 0;
+      this.sessionPlayers(sessionId).forEach(function (p) {
+        if (p.fee > 0 && self.feeStateOf(sessionId, p.customerId) === 'pending') n++;
+      });
+      return n;
+    },
+
+    /** 一键「这场台费全都收到了」：把还没确认的人全部标成收到 */
+    confirmAllFees: function (sessionId) {
+      var self = this, s = this.getIncome(sessionId);
+      if (!s) return 0;
+      var list = [];
+      this.sessionPlayers(sessionId).forEach(function (p) {
+        if (p.fee > 0 && self.feeStateOf(sessionId, p.customerId) === 'pending') list.push(p.customerId);
+      });
+      if (s.feeMode === 'netting') return 0;
+      list.forEach(function (cid) { self.setFeeState(sessionId, cid, 'cash'); });
+      return list.length;
     },
 
     /**
@@ -855,7 +954,7 @@ function humanDate(s) {
     /** 区间营收汇总：营业额 / 实收现金 / 赊账台费 / 赊账烟钱 */
     incomeStats: function (from, to) {
       var self = this;
-      var total = 0, games = 0, players = 0, creditFee = 0, creditCig = 0;
+      var total = 0, games = 0, players = 0, creditFee = 0, creditCig = 0, pendingFee = 0;
       this.data.incomes.forEach(function (i) {
         if (from && i.date < from) return;
         if (to && i.date > to) return;
@@ -865,6 +964,7 @@ function humanDate(s) {
         var cs = self.creditSumOf(i.id);
         creditFee += cs.fee;
         creditCig += cs.cig;
+        pendingFee += self.feePendingFeeOf(i);      // 还没确认的台费（不算已收）
       });
       return {
         total: round2(total),
@@ -872,7 +972,8 @@ function humanDate(s) {
         players: players,
         creditFee: round2(creditFee),      // 这场赊掉的台费
         creditCig: round2(creditCig),      // 这场赊掉的烟钱（代买垫付）
-        cash: round2(total - creditFee),   // 台费里实收现金的部分
+        pending: round2(pendingFee),       // 台费还没确认的部分
+        cash: round2(total - creditFee - pendingFee),   // 台费里确实收到了的现金
         avg: games ? round2(total / games) : 0,
         perHead: players ? round2(total / players) : 0
       };

@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '2.1.0';
+  var VERSION = '2.2.0';
 
   var state = {
     route: 'home',
@@ -532,6 +532,7 @@
     var sub = [];
     sub.push('台费已收 ¥' + money(ss.feePaid));
     if (ss.creditFee > 0) sub.push('还没收到 ¥' + money(ss.creditFee));
+    if (ss.feePending > 0) sub.push('台费待确认 ¥' + money(ss.feePending));
     if (ss.creditCig > 0) sub.push('烟钱挂账 ¥' + money(ss.creditCig));
     if (ss.loanOut > 0) sub.push('借出 ¥' + money(ss.loanOut) + (ss.loanBack > 0 ? ' · 已还 ¥' + money(ss.loanBack) : ''));
     return '<button class="tx" data-table="' + s.id + '" type="button">' +
@@ -1174,6 +1175,10 @@
       var s = Store.getSession(id) || s0;
       var ss = Store.sessionSummary(s);
       var ps = Store.sessionPlayers(s.id);
+      var pendCount = Store.feePendingCount(s.id);
+      // 上桌人数 > 记名人数时，那几位没记名的人既没法标、也没法挂账，
+      // 只能按「已收」算（否则收台按钮永远卡住）。这里如实告诉老板。
+      var unnamed = Math.max(0, (Number(s.players) || 0) - ps.length);
 
       var cards = ps.map(function (p) {
         var cls = p.net > 0.004 ? 'owe' : (p.net < -0.004 ? 'paid' : 'zero');
@@ -1192,8 +1197,10 @@
             chip = '<span class="pfee on" title="开台时已从借款里扣掉">' + face + '从借款扣</span>';
           } else if (st === 'credit') {
             chip = '<button class="pfee credit" type="button" data-feefix="' + p.customerId + '">' + face + '挂账</button>';
-          } else {
+          } else if (st === 'cash') {
             chip = '<button class="pfee ok" type="button" data-feefix="' + p.customerId + '">' + face + '已收</button>';
+          } else {
+            chip = '<button class="pfee wait" type="button" data-feefix="' + p.customerId + '">' + face + '待确认</button>';
           }
         } else {
           chip = '<span class="pfee off">不用台费</span>';
@@ -1216,27 +1223,45 @@
         '  <div class="st-row st-sub"><span>台费已收到</span><b class="num paid">¥' + esc(money(ss.feePaid)) + '</b></div>' +
         (ss.cashFee > 0 ? '  <div class="st-row st-sub2"><span>其中收的现金</span><b class="num">¥' + esc(money(ss.cashFee)) + '</b></div>' : '') +
         (ss.deductFee > 0 ? '  <div class="st-row st-sub2"><span>其中从借款里扣</span><b class="num">¥' + esc(money(ss.deductFee)) + '</b></div>' : '') +
-        (ss.creditFee > 0 ? '  <div class="st-row st-sub"><span>还没收到</span><b class="num owe">¥' + esc(money(ss.creditFee)) + '</b></div>' : '') +
+        (ss.creditFee > 0 ? '  <div class="st-row st-sub"><span>记他账上了</span><b class="num owe">¥' + esc(money(ss.creditFee)) + '</b></div>' : '') +
+        (ss.feePending > 0 ? '  <div class="st-row st-sub"><span>还没确认</span><b class="num wait">¥' + esc(money(ss.feePending)) + '</b></div>' : '') +
         '  <div class="st-div"></div>' +
         '  <div class="st-row"><span>借出去</span><b class="num owe">¥' + esc(money(ss.loanOut)) + '</b></div>' +
         '  <div class="st-row"><span>已收回</span><b class="num paid">¥' + esc(money(ss.loanBack)) + '</b></div>' +
         '  <div class="st-row st-strong"><span>牌面还欠</span><b class="num">¥' + esc(money(ss.netLoan)) + '</b></div>' +
         '</div>' +
 
-        '<div class="field"><label>台费收没收到</label>' +
+        '<div class="field"><label class="flabel"><span>台费收没收到</span>' +
+        (pendCount ? '<button class="mini mini-ok" type="button" data-feeall="1">这场全都收到了</button>' : '') +
+        '</label>' +
         (ps.length ? '<div class="flist">' + cards + '</div>' : '<p class="hint">这场还没记人。</p>') +
         '</div>' +
 
         '<p class="hint">' +
         (ss.feeMode === 'netting'
           ? '这场开台时选了「从借款里扣」，台费已随借款扣下，不用再逐人标。'
-          : '「已收」＝这人的台费收到了；点一下变「挂账」，就记到他账上。') +
+          : '挨个点一下：<b>已收</b>＝钱到手了，<b>挂账</b>＝先记他账上。没点过的人一直算「待确认」，账面不会替你当成收到了。') +
+        (pendCount ? '<br>还有 <b>' + pendCount + '</b> 人没确认，确认完才能收台。' : '') +
+        (unnamed > 0 ? '<br>这场登记了 ' + ps.length + ' 人，另外 <b>' + unnamed + '</b> 位没记名的，台费按已收算。' : '') +
         '<br>没收上来的钱继续挂在各自账上，之后在客户页或台面里随时能收。</p>';
     }
 
     function paint() {
       var sheet = $('#sheet-root .sheet');
-      if (sheet) $('#csBody', sheet).innerHTML = bodyHtml();
+      if (!sheet) return;
+      $('#csBody', sheet).innerHTML = bodyHtml();
+      syncFoot(sheet);
+    }
+
+    /** 收台按钮：还有台费没确认就不让收，免得留下糊涂账 */
+    function syncFoot(sheet) {
+      var btn = $('#confirmClose', sheet);
+      if (!btn) return;
+      var left = Store.feePendingCount(id);
+      btn.disabled = left > 0;
+      btn.textContent = left > 0
+        ? ('还有 ' + left + ' 人台费没确认')
+        : (wasClosed ? '完成' : '确认收台');
     }
 
     openSheet(
@@ -1251,13 +1276,22 @@
 
     var sheet = $('#sheet-root .sheet');
     sheet.addEventListener('click', function (e) {
+      var all = e.target.closest('[data-feeall]');
+      if (all) {
+        var n = Store.confirmAllFees(id);
+        toast(n ? '这场 ' + n + ' 人台费都算收到了' : '本来就都确认过了', 'ok');
+        paint();
+        return;
+      }
       var fix = e.target.closest('[data-feefix]');
       if (fix) {
         var cid = fix.getAttribute('data-feefix');
         var now = Store.feeStateOf(id, cid);
-        var on = now !== 'credit';
-        Store.setFeeCredit(id, cid, on);
-        toast(on ? '这台费先记他账上' : '这台费算收到了', on ? 'warn' : 'ok');
+        var next = now === 'pending' ? 'cash' : (now === 'cash' ? 'credit' : 'pending');
+        Store.setFeeState(id, cid, next);
+        if (next === 'cash') toast('这台费算收到了', 'ok');
+        else if (next === 'credit') toast('这台费先记他账上', 'warn');
+        else toast('先留着，收台前再定');
         paint();
         return;
       }
@@ -1390,7 +1424,12 @@
       '    <div><span class="k">本月挂账台费</span><b class="num owe">¥' + esc(money(incMonth.creditFee)) + '</b></div>' +
       '    <div><span class="k">本月挂账烟钱</span><b class="num owe">¥' + esc(money(incMonth.creditCig)) + '</b></div>' +
       '    <div><span class="k">涉及场次</span><b class="num">' + Store.creditIncomeCount(monthFrom, null) + ' 场</b></div>' +
-      '  </div></div></div>' +
+      '  </div></div>' +
+      (incMonth.pending > 0
+        ? '<p class="hint">另外还有 <b>¥' + esc(money(incMonth.pending)) + '</b> 台费<b>没确认</b>——收台时还没过这些人，'
+          + '既没算收到、也没算欠。去那几台点一下「待确认」就清楚了。</p>'
+        : '') +
+      '</div>' +
 
       '<div class="section"><div class="section-head"><h2>借贷情况</h2><span class="muted">开台借出去、又收回来的钱</span></div>' +
       '  <div class="card"><div class="stat-row">' +

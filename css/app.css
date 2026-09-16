@@ -915,4 +915,11 @@ body.locked .fab{ visibility:hidden; }
 .pfee.on{ background:var(--bg-sunken); color:var(--ink-3); cursor:default; }
 .pfee.off{ border-style:dashed; color:var(--ink-3); cursor:default; font-weight:500; }
 
+/* ---------- v2.2 台费默认「待确认」 ---------- */
+/* 还没点过的人：蓝框提示这里等你表态（不用绿、不用金，免得跟「已收 / 挂账」看混） */
+.pfee.wait{ border-color:#A9C0DA; background:#F3F7FC; color:#2D5F92; }
+.num.wait{ color:#2D5F92; }
+.field > label.flabel{ display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.mini-ok{ border-color:rgba(27,138,87,.34); background:var(--green-soft); color:var(--green); }
+
 .btn-paid{ background:linear-gradient(145deg,#1F9C63,#14724A); color:#fff; box-shadow:0 6px 16px rgba(27,138,87,.24); }
