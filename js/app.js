@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '2.2.1';
+  var VERSION = '2.2.2';
 
   var state = {
     route: 'home',
