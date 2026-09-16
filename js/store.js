@@ -84,6 +84,13 @@ function humanDate(s) {
     return (h < 10 ? '0' + h : h) + ':' + (m < 10 ? '0' + m : m);
   }
 
+  /** 台号自动编号：日期 + 时间，比如「9月16日 17:20」——省得老板自己起名 */
+  function autoTableNo(ts) {
+    var d = new Date(Number(ts) || Date.now());
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
   /** 金额格式化：1234.5 → '1,234.5'；整数不带小数点 */
   function money(n) {
     n = round2(n);
@@ -648,6 +655,31 @@ function humanDate(s) {
       return this.setFeeState(sessionId, customerId, on ? 'credit' : 'cash', amount);
     },
 
+    /**
+     * 收台时改某位这场的台费金额（开台设错了、临时改价都在这改）。
+     * 台费合计跟着重算 = 各人台费之和 + 没记名的人按单价补；
+     * 已经挂账的，那笔欠款跟着校准。
+     */
+    setPlayerFee: function (sessionId, customerId, fee) {
+      var s = this.getIncome(sessionId);
+      if (!s || !customerId) return false;
+      var v = round2(fee);
+      if (!(v >= 0)) v = 0;
+      if (!s.feeMap || typeof s.feeMap !== 'object') s.feeMap = {};
+      s.feeMap[customerId] = v;
+
+      var sum = 0, n = 0;
+      Object.keys(s.feeMap).forEach(function (k) { sum += Number(s.feeMap[k]) || 0; n++; });
+      var rest = Math.max(0, (Number(s.players) || 0) - n);
+      s.amount = round2(sum + rest * round2(s.unitPrice));
+      this.save();
+
+      if (this.feeStateOf(sessionId, customerId) === 'credit') {
+        this.setFeeState(sessionId, customerId, 'credit', v);   // 挂账金额跟着走
+      }
+      return true;
+    },
+
     /** 场次上这位玩家的台费确认过没有（只看名单，不看钱） */
     feeCheckedOf: function (sessionId, customerId) {
       var s = this.getIncome(sessionId);
@@ -698,6 +730,44 @@ function humanDate(s) {
     },
 
     /**
+     * 没记名的上桌者还剩几位、还差多少台费。
+     * 台费合计 − 已记名各位的台费 = 没记名那几位的（不表态就按「收到」算）。
+     */
+    unnamedFeeOf: function (sessionOrId) {
+      var s = typeof sessionOrId === 'string' ? this.getIncome(sessionOrId) : sessionOrId;
+      if (!s) return { count: 0, fee: 0 };
+      if (s.feeMode === 'netting') return { count: 0, fee: 0 };
+      var ps = this.sessionPlayers(s.id);
+      var count = Math.max(0, (Number(s.players) || 0) - ps.length);
+      if (!(count > 0)) return { count: 0, fee: 0 };
+      var namedFee = 0;
+      ps.forEach(function (p) { if (p.fee > 0) namedFee += p.fee; });
+      var fee = round2(Math.max(0, Number(s.amount || 0) - namedFee));
+      return { count: count, fee: fee };
+    },
+
+    /**
+     * 没记名的人台费欠着：补个名字，把他那份台费挂到他账上。
+     * 一次补一位（一场可以补多次）；补完他就成了「记名的人」，不再算在没记名的里头。
+     */
+    creditUnnamedFee: function (sessionId, name) {
+      name = String(name || '').trim();
+      if (!name) return null;
+      var s = this.getIncome(sessionId);
+      if (!s) return null;
+      var left = this.unnamedFeeOf(s.id);
+      if (!(left.count > 0) || !(left.fee > 0)) return null;
+      var each = round2(left.fee / left.count);        // 没记名的几位均摊（通常就是每人单价）
+      var c = this.findCustomerByName(name) || this.addCustomer({ name: name });
+      if (!c) return null;
+      if (!s.feeMap || typeof s.feeMap !== 'object') s.feeMap = {};
+      s.feeMap[c.id] = each;
+      this.save();
+      this.setFeeState(s.id, c.id, 'credit', each);     // 挂到他账上（真相在流水里）
+      return { customerId: c.id, name: c.name, fee: each };
+    },
+
+    /**
      * 开台。members = [{ customerId, stake, credit, cig, cigName }]
      *  stake = 开台借款额（0 = 自带现金、不用借）；credit/cig = 顺手挂在这场的台费 / 烟钱
      */
@@ -719,7 +789,7 @@ function humanDate(s) {
         status: 'open',
         openAt: now,
         closeAt: null,
-        tableNo: String(info.tableNo || '').trim(),
+        tableNo: String(info.tableNo || '').trim() || autoTableNo(now),
         note: String(info.note || '').trim(),
         feeMap: {},                  // { customerId: 这位的台费 } —— 每人台费可以不一样
         createdAt: now

@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '2.2.2';
+  var VERSION = '2.2.3';
 
   var state = {
     route: 'home',
@@ -62,6 +62,47 @@
       mask.addEventListener('click', function (e) { if (e.target === mask) done(false); });
       $('[data-act="no"]', mask).addEventListener('click', function () { done(false); });
       $('[data-act="yes"]', mask).addEventListener('click', function () { done(true); });
+    });
+  }
+
+  /**
+   * 要一个名字的小弹窗（比如「没记名的人欠台费」补名字）。
+   * 弹窗元素每次都是新建的，监听就绑在它们自己身上，安全。
+   */
+  function askTextDlg(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var root = $('#dialog-root');
+      root.innerHTML =
+        '<div class="dlg-mask">' +
+        '  <div class="dlg" role="dialog" aria-modal="true">' +
+        '    <h3>' + esc(opts.title || '') + '</h3>' +
+        '    <p>' + esc(opts.text || '') + '</p>' +
+        '    <input class="input" id="askTextInput" type="text" maxlength="20" ' +
+        '      placeholder="' + esc(opts.placeholder || '') + '" value="' + esc(opts.value || '') + '">' +
+        '    <div class="btn-row" style="margin-top:14px">' +
+        '      <button class="btn btn-ghost" data-ask="no" type="button">取消</button>' +
+        '      <button class="btn btn-primary" data-ask="yes" type="button">' + esc(opts.okText || '确定') + '</button>' +
+        '    </div>' +
+        '  </div>' +
+        '</div>';
+      var mask = $('.dlg-mask', root);
+      var input = $('#askTextInput', root);
+      requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
+      function done(val) {
+        mask.classList.remove('show');
+        setTimeout(function () { root.innerHTML = ''; }, 200);
+        resolve(val);
+      }
+      mask.addEventListener('click', function (e) { if (e.target === mask) done(null); });
+      $('[data-ask="no"]', root).addEventListener('click', function () { done(null); });
+      $('[data-ask="yes"]', root).addEventListener('click', function () { done(String(input.value || '').trim() || null); });
+      input.addEventListener('keydown', function (e) {          // 回车直接确认
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        done(String(input.value || '').trim() || null);
+      });
+      setTimeout(function () { input.focus(); }, 260);
     });
   }
 
@@ -420,6 +461,16 @@
     return '这台牌';
   }
 
+  /** 这一台都有谁（列表里直接看得到人名，不用点进去） */
+  function tableWho(s, max) {
+    var names = [];
+    Store.sessionPlayers(s.id).forEach(function (p) { names.push(p.name); });
+    if (!names.length) return '';
+    max = max || 4;
+    if (names.length > max) return names.slice(0, max).join('、') + ' 等 ' + names.length + ' 人';
+    return names.join('、');
+  }
+
   function renderIncome() {
     var ov = Store.overview();
     var openList = Store.openSessions();
@@ -507,20 +558,23 @@
     });
   }
 
-  /** 正在打的台：一行 */
+  /** 正在打的台：一行（标题直接显示上桌的人，不点进去也知道是谁） */
   function openTableRowHtml(s) {
     var ss = Store.sessionSummary(s);
     var openAt = s.openAt || s.createdAt || Date.now();
     var bits = [];
-    bits.push('开台 ' + esc(hmTime(s.openAt) || '--:--') + ' · 打了 <b class="num" data-dur="' + openAt + '">' + esc(durText(Date.now() - openAt)) + '</b>');
+    // 台号是自动编号（本身就含时间）时不必再重复一遍「开台 17:20」
+    if (!/^\d+月\d+日 \d{2}:\d{2}$/.test(String(s.tableNo || ''))) bits.push('开台 ' + esc(hmTime(s.openAt) || '--:--'));
+    bits.push('打了 <b class="num" data-dur="' + openAt + '">' + esc(durText(Date.now() - openAt)) + '</b>');
     if (s.players) bits.push(s.players + ' 人');
     if (ss.loanOut > 0) bits.push('借出 ¥' + esc(money(ss.loanOut)) + (ss.loanBack > 0 ? ' · 已还 ¥' + esc(money(ss.loanBack)) : ''));
+    var who = tableWho(s);
     return '<div class="tx tx-openrow">' +
       '<button class="tx-hit" data-table="' + s.id + '" type="button">' +
       '<span class="tx-badge live">台</span>' +
       '<span class="tx-main">' +
-      '<span class="tx-title">' + esc(tableName(s)) + ' · 台费 ¥' + esc(money(ss.fee)) + '</span>' +
-      '<span class="tx-note">' + bits.join(' · ') + '</span>' +
+      '<span class="tx-title">' + esc(who || tableName(s)) + ' · 台费 ¥' + esc(money(ss.fee)) + '</span>' +
+      '<span class="tx-note">' + (who ? esc(tableName(s)) + ' · ' : '') + bits.join(' · ') + '</span>' +
       '</span>' +
       '<span class="tx-side">' +
       '<span class="tx-amt num owe">¥' + esc(money(ss.netLoan)) + '</span>' +
@@ -531,24 +585,26 @@
       '</div>';
   }
 
-  /** 已收工的台：一行（右侧可「再开」：原班人马、台费借款预填） */
+  /** 已收工的台：一行（标题显示人名 + 台号；右侧可「再开」） */
   function closedRowHtml(s) {
     var ss = Store.sessionSummary(s);
     var meta = s.players + ' 人 × ¥' + money(s.unitPrice);
-    if (s.tableNo) meta = s.tableNo + ' · ' + meta;
     if (s.note) meta += ' · ' + s.note;
     var sub = [];
+    sub.push(tableName(s));
+    sub.push(meta);
     sub.push('台费已收 ¥' + money(ss.feePaid));
     if (ss.creditFee > 0) sub.push('还没收到 ¥' + money(ss.creditFee));
-    if (ss.feePending > 0) sub.push('台费待确认 ¥' + money(ss.feePending));
+    if (ss.feePending > 0) sub.push('台费待定 ¥' + money(ss.feePending));
     if (ss.creditCig > 0) sub.push('烟钱挂账 ¥' + money(ss.creditCig));
     if (ss.loanOut > 0) sub.push('借出 ¥' + money(ss.loanOut) + (ss.loanBack > 0 ? ' · 已还 ¥' + money(ss.loanBack) : ''));
+    var who = tableWho(s);
     return '<div class="tx tx-openrow">' +
       '<button class="tx-hit" data-table="' + s.id + '" type="button">' +
       '<span class="tx-badge ' + (ss.netLoan > 0.004 ? 'credit' : 'inc') + '">场</span>' +
       '<span class="tx-main">' +
-      '<span class="tx-title num">' + esc(meta) + '</span>' +
-      '<span class="tx-note">' + esc(sub.join(' · ')) + '</span>' +
+      '<span class="tx-title">' + esc(who || meta) + '</span>' +
+      '<span class="tx-note">' + esc(who ? sub.join(' · ') : sub.slice(1).join(' · ')) + '</span>' +
       '</span>' +
       '<span class="tx-side">' +
       '<span class="tx-amt num inc">+¥' + esc(money(ss.fee)) + '</span>' +
@@ -671,7 +727,7 @@
         '<span>更多选项：台号 / 日期 / 备注 / 台费怎么收</span>' + icon('chev', 16) + '</button>' +
         '<div class="adv-body" id="advBody"' + (draft.adv ? '' : ' hidden') + '>' +
         '  <div class="field"><label>台号 / 桌号</label>' +
-        '    <input class="input" id="tbNo" type="text" maxlength="12" placeholder="比如：1号台" value="' + esc(draft.tableNo) + '"></div>' +
+        '    <input class="input" id="tbNo" type="text" maxlength="20" placeholder="留空自动编号（比如 9月16日 17:20）" value="' + esc(draft.tableNo) + '"></div>' +
         '  <div class="field"><label>日期</label>' +
         '    <input class="input" id="tbDate" type="date" value="' + esc(draft.date) + '"></div>' +
         '  <div class="field"><label>台费怎么收<span class="muted" style="font-weight:400"> — 默认「单独收」，不管它就行</span></label>' +
@@ -1208,16 +1264,27 @@
     if (!s0) return;
     var wasClosed = s0.status === 'closed';
 
-    function bodyHtml() {
+    /** 汇总块（改台费数字时只重绘这一块，不重建卡片，免得输入框丢焦点） */
+    function settleHtml() {
       var s = Store.getSession(id) || s0;
       var ss = Store.sessionSummary(s);
-      var ps = Store.sessionPlayers(s.id);
-      var pendCount = Store.feePendingCount(s.id);
-      // 上桌人数 > 记名人数时，那几位没记名的人既没法标、也没法挂账，
-      // 只能按「已收」算（否则收台按钮永远卡住）。这里如实告诉老板。
-      var unnamed = Math.max(0, (Number(s.players) || 0) - ps.length);
+      return '<div class="settle">' +
+        '  <div class="st-row"><span>台费收入（营业额）</span><b class="num inc">¥' + esc(money(ss.fee)) + '</b></div>' +
+        '  <div class="st-row st-sub"><span>台费已收到</span><b class="num paid">¥' + esc(money(ss.feePaid)) + '</b></div>' +
+        (ss.deductFee > 0 ? '  <div class="st-row st-sub2"><span>其中从借款里扣</span><b class="num">¥' + esc(money(ss.deductFee)) + '</b></div>' : '') +
+        (ss.creditFee > 0 ? '  <div class="st-row st-sub"><span>记他账上了</span><b class="num owe">¥' + esc(money(ss.creditFee)) + '</b></div>' : '') +
+        (ss.feePending > 0 ? '  <div class="st-row st-sub"><span>还没定</span><b class="num wait">¥' + esc(money(ss.feePending)) + '</b></div>' : '') +
+        '  <div class="st-div"></div>' +
+        '  <div class="st-row"><span>借出去</span><b class="num owe">¥' + esc(money(ss.loanOut)) + '</b></div>' +
+        '  <div class="st-row"><span>已收回</span><b class="num paid">¥' + esc(money(ss.loanBack)) + '</b></div>' +
+        '  <div class="st-row st-strong"><span>牌面还欠</span><b class="num">¥' + esc(money(ss.netLoan)) + '</b></div>' +
+        '</div>';
+    }
 
-      var cards = ps.map(function (p) {
+    /** 每位一张卡：台费金额能改，收到 / 挂账两个按钮直接点 */
+    function cardsHtml(ps) {
+      var s = Store.getSession(id) || s0;
+      return ps.map(function (p) {
         var cls = p.net > 0.004 ? 'owe' : (p.net < -0.004 ? 'paid' : 'zero');
         var txt = p.net > 0.004 ? '欠 ¥' + money(p.net) : (p.net < -0.004 ? '多还 ¥' + money(-p.net) : '已清');
         var sub = [];
@@ -1226,21 +1293,26 @@
         if (p.credit - p.cig > 0.004) sub.push('挂账 ¥' + money(p.credit - p.cig));
         if (p.cig > 0.004) sub.push('烟钱 ¥' + money(p.cig));
 
-        var chip;
+        var feeBox;
         if (p.fee > 0) {
           var st = Store.feeStateOf(s.id, p.customerId);
-          var face = '台费 ¥' + esc(money(p.fee)) + ' · ';
           if (st === 'deduct') {
-            chip = '<span class="pfee on" title="开台时已从借款里扣掉">' + face + '从借款扣</span>';
-          } else if (st === 'credit') {
-            chip = '<button class="pfee credit" type="button" data-feefix="' + p.customerId + '">' + face + '挂账</button>';
-          } else if (st === 'cash') {
-            chip = '<button class="pfee ok" type="button" data-feefix="' + p.customerId + '">' + face + '已收</button>';
+            feeBox = '<span class="pfee on" title="开台时已从借款里扣掉">台费 ¥' + esc(money(p.fee)) + ' · 从借款扣</span>';
           } else {
-            chip = '<button class="pfee wait" type="button" data-feefix="' + p.customerId + '">' + face + '待确认</button>';
+            var stTxt = st === 'cash' ? '已收' : (st === 'credit' ? '挂账' : '待确认');
+            var stCls = st === 'cash' ? 'ok' : (st === 'credit' ? 'credit' : 'wait');
+            feeBox = '<span class="fee-pick">' +
+              '<span class="fp-label">台费</span>' +
+              '<span class="fp-money"><span class="cur">¥</span>' +
+              '<input class="fp-in num" type="text" inputmode="decimal" data-feefee="' + p.customerId + '" ' +
+              'value="' + esc(Store.util.round2(p.fee)) + '" aria-label="' + esc(p.name) + '的台费"></span>' +
+              '<span class="fp-state ' + stCls + '">' + stTxt + '</span>' +
+              '<button class="fp-btn fp-ok' + (st === 'cash' ? ' on' : '') + '" type="button" data-feeset="' + p.customerId + '" data-set="cash">收到</button>' +
+              '<button class="fp-btn fp-credit' + (st === 'credit' ? ' on' : '') + '" type="button" data-feeset="' + p.customerId + '" data-set="credit">挂账</button>' +
+              '</span>';
           }
         } else {
-          chip = '<span class="pfee off">不用台费</span>';
+          feeBox = '<span class="pfee off">不用台费</span>';
         }
 
         return '<div class="fcard">' +
@@ -1249,37 +1321,43 @@
           '<span class="prow-sub">' + esc(sub.join(' · ') || '还没有往来') + '</span></span>' +
           '<span class="prow-amt num ' + cls + '">' + esc(txt) + '</span>' +
           '</div>' +
-          '<div class="fcard-acts">' + chip + '<span class="fcard-sp"></span>' +
+          '<div class="fcard-acts">' + feeBox + '<span class="fcard-sp"></span>' +
           (p.net > 0.004 ? '<button class="mini" type="button" data-settlepay="' + p.customerId + '">收款</button>' : '') +
           '</div>' +
           '</div>';
       }).join('');
+    }
 
-      return '<div class="settle">' +
-        '  <div class="st-row"><span>台费收入（营业额）</span><b class="num inc">¥' + esc(money(ss.fee)) + '</b></div>' +
-        '  <div class="st-row st-sub"><span>台费已收到</span><b class="num paid">¥' + esc(money(ss.feePaid)) + '</b></div>' +
-        (ss.cashFee > 0 ? '  <div class="st-row st-sub2"><span>其中收的现金</span><b class="num">¥' + esc(money(ss.cashFee)) + '</b></div>' : '') +
-        (ss.deductFee > 0 ? '  <div class="st-row st-sub2"><span>其中从借款里扣</span><b class="num">¥' + esc(money(ss.deductFee)) + '</b></div>' : '') +
-        (ss.creditFee > 0 ? '  <div class="st-row st-sub"><span>记他账上了</span><b class="num owe">¥' + esc(money(ss.creditFee)) + '</b></div>' : '') +
-        (ss.feePending > 0 ? '  <div class="st-row st-sub"><span>还没确认</span><b class="num wait">¥' + esc(money(ss.feePending)) + '</b></div>' : '') +
-        '  <div class="st-div"></div>' +
-        '  <div class="st-row"><span>借出去</span><b class="num owe">¥' + esc(money(ss.loanOut)) + '</b></div>' +
-        '  <div class="st-row"><span>已收回</span><b class="num paid">¥' + esc(money(ss.loanBack)) + '</b></div>' +
-        '  <div class="st-row st-strong"><span>牌面还欠</span><b class="num">¥' + esc(money(ss.netLoan)) + '</b></div>' +
-        '</div>' +
+    /** 没记名的那几位：默认按「收到」算，谁欠着可以补个名字挂到他账上 */
+    function unnamedHtml(un) {
+      return '<div class="unnamed-row">' +
+        '<span class="un-txt">还有 <b>' + un.count + '</b> 位没记名字，台费共 <b class="num">¥' + esc(money(un.fee)) + '</b>，现在按「收到」算</span>' +
+        '<button class="mini" type="button" data-uncredit="1">有人欠着？记他账上</button>' +
+        '</div>';
+    }
 
-        '<div class="field"><label class="flabel"><span>台费收没收到</span>' +
-        (pendCount ? '<button class="mini mini-ok" type="button" data-feeall="1">这场全都收到了</button>' : '') +
+    function bodyHtml() {
+      var s = Store.getSession(id) || s0;
+      var ss = Store.sessionSummary(s);
+      var ps = Store.sessionPlayers(s.id);
+      var pendCount = Store.feePendingCount(s.id);
+      var un = Store.unnamedFeeOf(s.id);
+
+      return '<div id="csSettle">' + settleHtml() + '</div>' +
+
+        '<div class="field"><label class="flabel"><span>台费收没收到（金额能直接改）</span>' +
+        (pendCount ? '<button class="mini mini-ok" type="button" data-feeall="1">剩下 ' + pendCount + ' 人全收到</button>' : '') +
         '</label>' +
-        (ps.length ? '<div class="flist">' + cards + '</div>' : '<p class="hint">这场还没记人。</p>') +
+        (ps.length ? '<div class="flist">' + cardsHtml(ps) + '</div>' : '<p class="hint">这场还没记人。</p>') +
+        (un.count > 0 ? unnamedHtml(un) : '') +
         '</div>' +
 
         '<p class="hint">' +
         (ss.feeMode === 'netting'
           ? '这场开台时选了「从借款里扣」，台费已随借款扣下，不用再逐人标。'
-          : '挨个点一下：<b>已收</b>＝钱到手了，<b>挂账</b>＝先记他账上。没点过的人一直算「待确认」，账面不会替你当成收到了。') +
-        (pendCount ? '<br>还有 <b>' + pendCount + '</b> 人没确认，确认完才能收台。' : '') +
-        (unnamed > 0 ? '<br>这场登记了 ' + ps.length + ' 人，另外 <b>' + unnamed + '</b> 位没记名的，台费按已收算。' : '') +
+          : '挨个定一下：<b>收到</b>＝钱到手了，<b>挂账</b>＝先记他账上；点错了再点一下就能改回来。' +
+            '台费数字不对，直接改了就行，合计自己跟着变。没定过的人一直算「待确认」，账面不会替你当成收到了。') +
+        (pendCount ? '<br>还有 <b>' + pendCount + '</b> 人没定，定完才能收台。' : '') +
         '<br>没收上来的钱继续挂在各自账上，之后在客户页或台面里随时能收。</p>';
     }
 
@@ -1316,20 +1394,41 @@
       var all = e.target.closest('[data-feeall]');
       if (all) {
         var n = Store.confirmAllFees(id);
-        toast(n ? '这场 ' + n + ' 人台费都算收到了' : '本来就都确认过了', 'ok');
+        toast(n ? '剩下 ' + n + ' 人台费都算收到了' : '本来就都定过了', 'ok');
         paint();
         return;
       }
-      var fix = e.target.closest('[data-feefix]');
-      if (fix) {
-        var cid = fix.getAttribute('data-feefix');
-        var now = Store.feeStateOf(id, cid);
-        var next = now === 'pending' ? 'cash' : (now === 'cash' ? 'credit' : 'pending');
+      // 收到 / 挂账：点哪个算哪个，再点一下取消回「待确认」
+      var fb = e.target.closest('[data-feeset]');
+      if (fb) {
+        var cid = fb.getAttribute('data-feeset');
+        var want = fb.getAttribute('data-set');
+        var nowSt = Store.feeStateOf(id, cid);
+        var next = nowSt === want ? 'pending' : want;
         Store.setFeeState(id, cid, next);
         if (next === 'cash') toast('这台费算收到了', 'ok');
-        else if (next === 'credit') toast('这台费先记他账上', 'warn');
-        else toast('先留着，收台前再定');
+        else if (next === 'credit') toast('先记他账上，之后随时能收', 'warn');
+        else toast('退回「待确认」了');
         paint();
+        return;
+      }
+      // 没记名的人欠台费 → 补个名字挂到他账上
+      var uc = e.target.closest('[data-uncredit]');
+      if (uc) {
+        var left = Store.unnamedFeeOf(id);
+        askTextDlg({
+          title: '谁欠着台费？',
+          text: '还有 ' + left.count + ' 位没记名字，台费共 ¥' + money(left.fee) +
+            '。填个名字，这份台费就记到他账上，之后随时能收。',
+          placeholder: '姓名',
+          okText: '记他账上'
+        }).then(function (name) {
+          if (!name) return;
+          var r = Store.creditUnnamedFee(id, name);
+          if (!r) { toast('没记名的已经处理完了', 'err'); }
+          else { toast('已记到「' + r.name + '」账上 ¥' + money(r.fee), 'warn'); }
+          paint();
+        });
         return;
       }
       var t = e.target.closest('[data-settlepay]');
@@ -1340,14 +1439,28 @@
       });
     });
 
+    // 台费金额就地改：只刷汇总块，不重建卡片
+    // （重建 DOM 会把手正在点的按钮换掉——点「挂账」会被吞掉，这条踩过坑）
+    sheet.addEventListener('input', function (e) {
+      var t = e.target;
+      if (!t.hasAttribute || !t.hasAttribute('data-feefee')) return;
+      var cid = t.getAttribute('data-feefee');
+      var v = parseFloat(String(t.value).replace(/[^\d.]/g, '')) || 0;
+      Store.setPlayerFee(id, cid, v);
+      var box = $('#csSettle', sheet);
+      if (box) box.innerHTML = settleHtml();
+      syncFoot(sheet);
+    });
+
     $('#confirmClose', sheet).addEventListener('click', function () {
       if (!wasClosed) {
         var ss = Store.sessionSummary(Store.getSession(id));   // 收台前把账算好
         Store.closeSession(id);
         closeSheet();
-        // 报个数：收现多少、借款里扣多少、挂账多少、牌面还欠多少，一眼清账
+        // 报个数：收到多少、借款里扣多少、挂账多少、牌面还欠多少，一眼清账
         var parts = [];
-        if (ss.cashFee > 0) parts.push('收现 ¥' + money(ss.cashFee));
+        var got = Store.util.round2(ss.feePaid - ss.deductFee);   // 真收上来的（不含从借款里扣的）
+        if (got > 0) parts.push('收到台费 ¥' + money(got));
         if (ss.deductFee > 0) parts.push('借款里扣 ¥' + money(ss.deductFee));
         if (ss.creditFee > 0) parts.push('挂账 ¥' + money(ss.creditFee));
         if (ss.netLoan > 0) parts.push('牌面还欠 ¥' + money(ss.netLoan));
