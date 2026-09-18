@@ -10,7 +10,7 @@
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var view = $('#view');
-  var VERSION = '2.2.4';
+  var VERSION = '2.3.0';
 
   var state = {
     route: 'home',
@@ -37,6 +37,23 @@
     }, ms || 1800);
   }
 
+  /**
+   * 弹窗关闭的收尾：淡出 + 延迟清空 #dialog-root。
+   *
+   * ★ 必须带「是不是我这份」的校验。
+   * 老写法直接 root.innerHTML = '' 会踩竞态：用户点「取消」→ 200ms 内又打开
+   * 一个新的弹窗（比如连着取消又开勾选客户）→ 旧定时器把新弹窗整个清掉，
+   * 用户看到的就是「刚打开就自己没了」。
+   * 跟抽屉套抽屉（closeSheet 的 300ms）是同一类坑，这里一并堵上。
+   */
+  function closeDialog(mask, root) {
+    mask.classList.remove('show');
+    var mine = mask;
+    setTimeout(function () {
+      if (mine && mine.parentNode === root) root.innerHTML = '';
+    }, 200);
+  }
+
   /** 确认对话框，resolve(true/false) */
   function confirmDlg(opts) {
     return new Promise(function (resolve) {
@@ -55,8 +72,7 @@
       var mask = $('.dlg-mask', root);
       requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
       function done(val) {
-        mask.classList.remove('show');
-        setTimeout(function () { root.innerHTML = ''; }, 200);
+        closeDialog(mask, root);
         resolve(val);
       }
       mask.addEventListener('click', function (e) { if (e.target === mask) done(false); });
@@ -90,8 +106,7 @@
       var input = $('#askTextInput', root);
       requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
       function done(val) {
-        mask.classList.remove('show');
-        setTimeout(function () { root.innerHTML = ''; }, 200);
+        closeDialog(mask, root);
         resolve(val);
       }
       mask.addEventListener('click', function (e) { if (e.target === mask) done(null); });
@@ -103,6 +118,196 @@
         done(String(input.value || '').trim() || null);
       });
       setTimeout(function () { input.focus(); }, 260);
+    });
+  }
+
+  /**
+   * 勾选客户的全屏选择器（开台时选上桌的人用）。
+   * 一次勾多个，点「带上桌」一次性返回。
+   *
+   * 用 #dialog-root 而不是 sheet 抽屉：这里常常是「从开台抽屉里打开」的，
+   * 用 sheet 会踩「抽屉套抽屉」那个 300ms 收尾定时器的坑，独立容器最干净。
+   *
+   * opts.selected: 已选中的 customerId 数组（打开时预先勾上）
+   * 返回：选中的 id 数组；取消返回 null
+   */
+  function pickCustomersDlg(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var root = $('#dialog-root');
+      var chosen = {};
+      (opts.selected || []).forEach(function (id) { chosen[id] = 1; });
+      var kw = '';
+      var sort = opts.sort || 'freq';
+
+      function rowsData() {
+        var k = kw.trim().toLowerCase();
+        var list = Store.listCustomers().map(function (c) {
+          return { c: c, bal: Store.balanceOf(c.id), sum: Store.summaryOf(c.id) };
+        });
+        if (k) {
+          list = list.filter(function (r) {
+            return (r.c.name || '').toLowerCase().indexOf(k) >= 0 ||
+                   (r.c.phone || '').indexOf(k) >= 0;
+          });
+        }
+        if (sort === 'balance') {
+          list.sort(function (a, b) { return b.bal - a.bal || (a.c.name || '').localeCompare(b.c.name || '', 'zh-Hans-CN'); });
+        } else if (sort === 'name') {
+          list.sort(function (a, b) { return (a.c.name || '').localeCompare(b.c.name || '', 'zh-Hans-CN'); });
+        } else if (sort === 'recent') {
+          list.sort(function (a, b) { return (b.sum.lastDate || '').localeCompare(a.sum.lastDate || ''); });
+        } else {
+          // 常客榜：上桌次数多的在前
+          var rank = {};
+          Store.frequentPlayers(999).forEach(function (c, i) { rank[c.id] = i; });
+          list.sort(function (a, b) {
+            var ra = rank[a.c.id] === undefined ? 9999 : rank[a.c.id];
+            var rb = rank[b.c.id] === undefined ? 9999 : rank[b.c.id];
+            return ra - rb || (a.c.name || '').localeCompare(b.c.name || '', 'zh-Hans-CN');
+          });
+        }
+        return list;
+      }
+
+      function chosenCount() { return Object.keys(chosen).length; }
+
+      function rowHtml(r) {
+        var on = !!chosen[r.c.id];
+        var sub = r.c.phone ? esc(r.c.phone) : '';
+        if (r.sum.lastDate) sub += (sub ? ' · ' : '') + '最近 ' + r.sum.lastDate.slice(5).replace('-', '/');
+        return '<button class="pkrow' + (on ? ' on' : '') + '" type="button" data-pk="' + r.c.id + '">' +
+          '<span class="pkbox">' + (on ? icon('check', 15) : '') + '</span>' +
+          UI.avatarHtml(r.c.name) +
+          '<span class="pkmain"><span class="pkname">' + esc(r.c.name) + '</span>' +
+          '<span class="pksub">' + (sub || '暂无往来') + '</span></span>' +
+          '<span class="pkamt">' + UI.balanceHtml(r.bal) + '</span>' +
+          '</button>';
+      }
+
+      function listHtml() {
+        var list = rowsData();
+        if (!list.length) {
+          return '<div class="empty" style="padding:30px 20px"><h3>' +
+            (kw ? '没找到“' + esc(kw.trim()) + '”' : '还没有客户') + '</h3>' +
+            '<p>' + (kw ? '换个关键词，或点下面「新建」' : '点下面「＋ 新建客户」先加人') + '</p></div>';
+        }
+        return list.map(rowHtml).join('');
+      }
+
+      var sorts = [
+        { id: 'freq', label: '常来的' },
+        { id: 'recent', label: '最近来' },
+        { id: 'balance', label: '欠款多' },
+        { id: 'name', label: '按姓名' }
+      ];
+
+      root.innerHTML =
+        '<div class="dlg-mask pk-mask">' +
+        '  <div class="pk-full" role="dialog" aria-modal="true">' +
+        '    <div class="pk-head">' +
+        '      <button class="pk-x" data-pkact="cancel" type="button" aria-label="取消">' + icon('close', 20) + '</button>' +
+        '      <h3>选上桌的人</h3>' +
+        '      <span class="pk-count" id="pkCount"></span>' +
+        '    </div>' +
+        '    <div class="pk-search">' + icon('search', 18) +
+        '      <input id="pkKw" type="search" placeholder="搜姓名 / 电话（也可以不搜，直接勾）" value="">' +
+        '    </div>' +
+        '    <div class="chips pk-sorts">' + sorts.map(function (s) {
+          return '<button class="chip' + (sort === s.id ? ' on' : '') + '" data-pksort="' + s.id + '" type="button">' + s.label + '</button>';
+        }).join('') + '</div>' +
+        '    <div class="pk-list" id="pkList">' + listHtml() + '</div>' +
+        '    <div class="pk-foot">' +
+        '      <button class="btn btn-ghost pk-new" data-pkact="new" type="button">＋ 新建客户</button>' +
+        '      <button class="btn btn-primary pk-ok" data-pkact="ok" type="button">带上桌</button>' +
+        '    </div>' +
+        '  </div>' +
+        '</div>';
+
+      var mask = $('.dlg-mask', root);
+      var listBox = $('#pkList', root);
+      var countEl = $('#pkCount', root);
+      requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
+
+      function syncCount() {
+        var n = chosenCount();
+        if (countEl) countEl.textContent = n ? '已选 ' + n + ' 人' : '';
+      }
+
+      function repaint() {
+        listBox.innerHTML = listHtml();
+        syncCount();
+      }
+
+      function done(val) {
+        closeDialog(mask, root);
+        resolve(val);
+      }
+
+      // 点背景关闭：必须「按下」和「抬起」都在背景上才算。
+      // 只监听 click 的话，手指在列表里滑动选人、滑出卡片区就会误关选择器。
+      var downOnMask = false;
+      mask.addEventListener('pointerdown', function (e) { downOnMask = (e.target === mask); });
+      mask.addEventListener('click', function (e) {
+        if (e.target === mask && downOnMask) done(null);
+        downOnMask = false;
+      });
+
+      root.addEventListener('click', function (e) {
+        var t;
+        if ((t = e.target.closest('[data-pk]'))) {
+          var id = t.getAttribute('data-pk');
+          if (chosen[id]) delete chosen[id]; else chosen[id] = 1;
+          // 只重绘这一行，避免整列表重排、滚动位置跳
+          var on = !!chosen[id];
+          t.classList.toggle('on', on);
+          var box = t.querySelector('.pkbox');
+          if (box) box.innerHTML = on ? icon('check', 15) : '';
+          syncCount();
+          return;
+        }
+        if ((t = e.target.closest('[data-pksort]'))) {
+          sort = t.getAttribute('data-pksort');
+          root.querySelectorAll('[data-pksort]').forEach(function (x) {
+            x.classList.toggle('on', x.getAttribute('data-pksort') === sort);
+          });
+          repaint();
+          return;
+        }
+        if ((t = e.target.closest('[data-pkact]'))) {
+          var act = t.getAttribute('data-pkact');
+          if (act === 'cancel') { done(null); return; }
+          if (act === 'ok') {
+            var ids = Object.keys(chosen);
+            if (!ids.length) { toast('至少勾一个人', 'err'); return; }
+            done(ids);
+            return;
+          }          if (act === 'new') {
+            // 新建一个客户，建完自动勾上、回到列表
+            askTextDlg({ title: '新建客户', text: '名字记下来，下次直接勾。', placeholder: '客户姓名', okText: '建好并勾上' })
+              .then(function (name) {
+                if (!name) return;
+                var c = Store.findCustomerByName(name) || Store.addCustomer({ name: name });
+                if (!c) return;
+                chosen[c.id] = 1;
+                kw = '';
+                var ki = $('#pkKw', root); if (ki) ki.value = '';
+                repaint();
+                toast('已加上「' + c.name + '」', 'ok');
+              });
+            return;
+          }
+        }
+      });
+
+      var kwEl = $('#pkKw', root);
+      kwEl.addEventListener('input', function () {
+        kw = kwEl.value;
+        // 打字时只换列表，不动输入框本身
+        listBox.innerHTML = listHtml();
+      });
+
+      syncCount();
     });
   }
 
@@ -129,8 +334,7 @@
       var mask = $('.dlg-mask', root);
       requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
       function done(val) {
-        mask.classList.remove('show');
-        setTimeout(function () { root.innerHTML = ''; }, 200);
+        closeDialog(mask, root);
         resolve(val);
       }
       mask.addEventListener('click', function (e) { if (e.target === mask) done(null); });
@@ -703,6 +907,7 @@
       note: editing ? (editing.note || '') : '',
       guests: [],
       kw: '',
+      moreAdd: false,                     // 「直接打名字加/新建」是否展开
       adv: false                          // 「更多选项」是否展开
     };
     if (!editing) draft.amount = R2(draft.players * draft.unitPrice);
@@ -754,12 +959,12 @@
         }).join('') + '</div>';
     }
 
-    /** 最近上过桌的常客，一点即加 */
+    /** 常客区：一屏能点的人（常用的排前面，最多 14 个，不够就点「选客户」） */
     function recentHtml() {
       var have = haveIds();
-      var list = Store.recentPlayers(8).filter(function (c) { return !have[c.id]; });
+      var list = Store.frequentPlayers(14).filter(function (c) { return !have[c.id]; });
       if (!list.length) return '';
-      return '<div class="recent-wrap"><span class="recent-label">最近上桌</span>' +
+      return '<div class="recent-wrap"><span class="recent-label">常来的</span>' +
         '<div class="recent">' + list.map(function (c) {
           return '<button class="rchip" type="button" data-addcust="' + c.id + '">' + esc(c.name) + '</button>';
         }).join('') + '</div></div>';
@@ -836,10 +1041,18 @@
           ? '<div class="field"><label>牌面（借款在台面里记）</label><div class="glist" id="editPlayers"></div></div>'
           : '<div class="field">' +
           '  <label>上桌的人<span class="muted" style="font-weight:400" id="guestCount"></span></label>' +
-          '  <input class="input" id="addName" type="text" maxlength="20" placeholder="打名字搜客户，点一下加上桌" value="' + esc(draft.kw) + '">' +
-          '  <div id="candBox">' + candHtml() + '</div>' +
-          '  <div id="recentBox">' + recentHtml() + '</div>' +
+          '  <button class="btn btn-pickcust" id="pickCustBtn" type="button">' +
+          icon('users', 19) +
+          '<span class="pickcust-txt">从客户名单里勾选' +
+          '<span class="pickcust-sub">不用打字，一屏勾好几个人</span></span></button>' +
           '  <div id="guestBox">' + guestsHtml() + '</div>' +
+          '  <div id="recentBox">' + recentHtml() + '</div>' +
+          '  <div id="candBox"></div>' +
+          '  <div class="more-add" id="moreAdd"' + (draft.moreAdd ? '' : ' hidden') + '>' +
+          '    <input class="input" id="addName" type="text" maxlength="20" placeholder="打名字搜客户，点一下加上桌" value="' + esc(draft.kw) + '">' +
+          '    <p class="hint">找不到的人可以现打名字新建。</p>' +
+          '  </div>' +
+          '  <button class="link-btn" id="moreAddBtn" type="button">' + icon('plus', 14) + '直接打名字加/新建</button>' +
           '  <p class="hint">每位默认借 ¥' + DEF_STAKE + '，能单独改；自带现金不用借的，把金额清空（记 0）就行。' +
           '一场就 3 人 / 4 人，人数满 4 人后再加的人（替手）只记借款，台费默认 0。</p>' +
           '</div>') +
@@ -929,10 +1142,11 @@
       draft.amountTouched = false;
     }
 
-    function addGuest(customerId) {
+    /** 加一个人上桌；silent = 不重绘（批量勾选时最后统一重绘） */
+    function addGuest(customerId, silent) {
       var c = Store.getCustomer(customerId);
-      if (!c) return;
-      if (draft.guests.some(function (g) { return g.customerId === customerId; })) return;
+      if (!c) return false;
+      if (draft.guests.some(function (g) { return g.customerId === customerId; })) return false;
       if (!draft.playersTouched) draft.players = fixHead(draft.guests.length + 1);
       // 只有还占着「上桌人数」名额的这位，才默认收台费；
       // 人数已经满（4 人）之后再加的人（替手 / 看牌的），只记借款，台费默认 0，要收自己填
@@ -942,10 +1156,42 @@
         fee: onTable ? R2(draft.unitPrice) : 0, feeTouched: false, offHead: !onTable
       });
       draft.amountTouched = false;
+      if (silent) return true;
       draft.kw = '';
       var kwEl = $('#addName', sheet);
       if (kwEl) kwEl.value = '';
       renderGuests();
+      return true;
+    }
+
+    /** 一次勾一群人上桌（顺序：勾选返回的顺序） */
+    function addGuests(list) {
+      var n = 0;
+      (list || []).forEach(function (id) { if (addGuest(id, true)) n++; });
+      if (n) {
+        draft.kw = '';
+        var kwEl = $('#addName', sheet);
+        if (kwEl) kwEl.value = '';
+        renderGuests();
+      }
+      return n;
+    }
+
+    /** 打开勾选选择器：把已经在桌上的人预先勾上，回来时以勾选结果为准 */
+    function openPicker() {
+      var cur = draft.guests.map(function (g) { return g.customerId; });
+      pickCustomersDlg({ selected: cur }).then(function (ids) {
+        if (!ids) return;                       // 取消，桌面不动
+        // 以勾选结果为准：没勾的从桌上撤掉，新勾的加上
+        draft.guests = draft.guests.filter(function (g) { return ids.indexOf(g.customerId) >= 0; });
+        var have = {};
+        draft.guests.forEach(function (g) { have[g.customerId] = 1; });
+        var added = 0;
+        ids.forEach(function (id) { if (!have[id] && addGuest(id, true)) added++; });
+        draft.amountTouched = false;            // 人数/名单变了，台费合计重算
+        renderGuests();
+        if (added) toast('加上桌 ' + added + ' 人', 'ok');
+      });
     }
 
     // 初始化
@@ -966,6 +1212,15 @@
     /* 事件：点击 */
     sheet.addEventListener('click', function (e) {
       var t;
+      if ((t = e.target.closest('#pickCustBtn'))) { openPicker(); return; }
+      if ((t = e.target.closest('#moreAddBtn'))) {
+        draft.moreAdd = !draft.moreAdd;
+        var mb = $('#moreAdd', sheet);
+        if (mb) mb.hidden = !draft.moreAdd;
+        var ai = $('#addName', sheet);
+        if (ai && draft.moreAdd) setTimeout(function () { ai.focus(); }, 60);
+        return;
+      }
       if ((t = e.target.closest('[data-addcust]'))) { addGuest(t.getAttribute('data-addcust')); return; }
       if ((t = e.target.closest('[data-newcust]'))) {
         var nm = (draft.kw || '').trim();
@@ -1284,8 +1539,7 @@
     requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
 
     function close() {
-      mask.classList.remove('show');
-      setTimeout(function () { root.innerHTML = ''; }, 220);
+      closeDialog(mask, root);
     }
 
     var amtEl = $('#loanAmt', root);
@@ -2714,8 +2968,7 @@
       var mask = $('.dlg-mask', root);
       requestAnimationFrame(function () { requestAnimationFrame(function () { mask.classList.add('show'); }); });
       function done(i) {
-        mask.classList.remove('show');
-        setTimeout(function () { root.innerHTML = ''; }, 200);
+        closeDialog(mask, root);
         resolve(i);
       }
       root.querySelectorAll('[data-opt]').forEach(function (b) {

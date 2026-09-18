@@ -707,6 +707,40 @@ function humanDate(s) {
       return out;
     },
 
+    /**
+     * 常客榜：按「上桌次数」从多到少排，次数一样看谁最近来过。
+     * 开台页「常来的」用它——打得最多的人永远在最前面，一眼就能点到。
+     */
+    frequentPlayers: function (limit, excludeIds) {
+      limit = limit || 14;
+      var self = this;
+      var skip = {};
+      (excludeIds || []).forEach(function (id) { skip[id] = 1; });
+      var stat = {};
+      this.data.incomes.forEach(function (s) {
+        var when = s.openAt || s.createdAt || 0;
+        var seenInSession = {};
+        self.data.txs.forEach(function (t) {
+          if (t.incomeId !== s.id || seenInSession[t.customerId]) return;
+          seenInSession[t.customerId] = 1;
+          var r = stat[t.customerId] || (stat[t.customerId] = { count: 0, last: 0 });
+          r.count++;
+          if (when > r.last) r.last = when;
+        });
+      });
+      var out = [];
+      Object.keys(stat).forEach(function (id) {
+        if (skip[id]) return;
+        var c = self.getCustomer(id);
+        if (!c) return;
+        out.push({ c: c, count: stat[id].count, last: stat[id].last });
+      });
+      out.sort(function (a, b) {
+        return (b.count - a.count) || (b.last - a.last);
+      });
+      return out.slice(0, limit).map(function (r) { return r.c; });
+    },
+
     /** 这场牌的钱账汇总 */
     sessionSummary: function (sessionOrId) {
       var s = typeof sessionOrId === 'string' ? this.getIncome(sessionOrId) : sessionOrId;
